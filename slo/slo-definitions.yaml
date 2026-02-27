@@ -1,0 +1,21 @@
+slos:
+  - name: manifest-availability
+    description: "Manifest requests succeed without 5xx errors"
+    sli:
+      type: availability
+      metric: origin_http_requests_total
+      filter: 'path=~".*\\.m3u8"'
+      good: 'status!~"5.."'
+    target: 0.999
+    window: 30d
+
+  - name: video-startup-time
+    description: "Video starts playing within 3 seconds at p95"
+    sli:
+      type: latency
+      metric: qoe_startup_duration_seconds
+      threshold_seconds: 3.0
+      percentile: 0.95
+    target: 0.99
+    window: 30d
+

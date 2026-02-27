@@ -1,0 +1,22 @@
+groups:
+  - name: slo_recording_rules
+    interval: 30s
+    rules:
+      - record: slo:manifest_requests:total_rate5m
+        expr: sum(rate(origin_http_requests_total{path=~".*\\.m3u8"}[5m]))
+
+      - record: slo:manifest_requests:error_rate5m
+        expr: >
+          sum(rate(origin_http_requests_total{path=~".*\\.m3u8",status=~"5.."}[5m]))
+          /
+          sum(rate(origin_http_requests_total{path=~".*\\.m3u8"}[5m]))
+
+      - record: slo:manifest_availability:ratio5m
+        expr: 1 - slo:manifest_requests:error_rate5m
+
+      - record: slo:startup_time:p95_5m
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(qoe_startup_duration_seconds_bucket[5m])) by (le)
+          )
+

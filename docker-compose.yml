@@ -1,0 +1,139 @@
+version: "3.9"
+
+services:
+  # --- Local AWS emulation ---
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: streamsre-localstack
+    environment:
+      - SERVICES=s3,sqs
+      - DEFAULT_REGION=${AWS_REGION:-us-west-2}
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+
+  # --- Upload API ---
+  upload-api:
+    build:
+      context: ./services/upload-api
+      dockerfile: Dockerfile
+    container_name: streamsre-upload-api
+    env_file: .env
+    environment:
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://localstack:4566}
+      - SQS_ENDPOINT_URL=${SQS_ENDPOINT_URL:-http://localstack:4566}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - localstack
+
+  # --- Transcode Worker ---
+  transcode-worker:
+    build:
+      context: ./services/transcode-worker
+      dockerfile: Dockerfile
+    container_name: streamsre-transcode-worker
+    env_file: .env
+    environment:
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://localstack:4566}
+      - SQS_ENDPOINT_URL=${SQS_ENDPOINT_URL:-http://localstack:4566}
+    depends_on:
+      - localstack
+
+  # --- Origin (Nginx) ---
+  origin:
+    build:
+      context: ./services/origin
+      dockerfile: Dockerfile
+    container_name: streamsre-origin
+    env_file: .env
+    ports:
+      - "8080:8080"
+    depends_on:
+      - localstack
+
+  # --- Beacon Collector ---
+  beacon-collector:
+    build:
+      context: ./services/beacon-collector
+      dockerfile: Dockerfile
+    container_name: streamsre-beacon-collector
+    env_file: .env
+    ports:
+      - "8001:8001"
+
+  # --- Frontend (Next.js, served via Nginx in Dockerfile) ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: streamsre-frontend
+    env_file: .env
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+      - VITE_ORIGIN_URL=${VITE_ORIGIN_URL:-http://localhost:8080}
+      - VITE_BEACON_URL=${VITE_BEACON_URL:-http://localhost:8001}
+      - VITE_GRAFANA_URL=${VITE_GRAFANA_URL:-http://localhost:3000}
+      - VITE_PROMETHEUS_URL=${VITE_PROMETHEUS_URL:-http://localhost:9090}
+    ports:
+      - "3001:80"
+    depends_on:
+      - upload-api
+      - origin
+      - beacon-collector
+
+  # --- Prometheus ---
+  prometheus:
+    build:
+      context: ./observability/prometheus
+      dockerfile: Dockerfile
+    container_name: streamsre-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-lifecycle"
+
+  # --- Grafana ---
+  grafana:
+    build:
+      context: ./observability/grafana
+      dockerfile: Dockerfile
+    container_name: streamsre-grafana
+    env_file: .env
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # --- Alertmanager ---
+  alertmanager:
+    build:
+      context: ./observability/alertmanager
+      dockerfile: Dockerfile
+    container_name: streamsre-alertmanager
+    env_file: .env
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  localstack_data:
+  prometheus_data:
+  grafana_data:
+

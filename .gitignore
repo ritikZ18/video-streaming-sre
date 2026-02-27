@@ -1,6 +1,32 @@
-# =========================
+#############################################
+# StreamSRE – Global .gitignore
+#############################################
+
+#############################################
+# Environment & Secrets
+#############################################
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.*.local
+*.env
+*.env.*
+.envrc
+
+secrets/
+credentials/
+*.pem
+*.key
+*.cert
+*.p12
+
+aws-exports.js
+
+#############################################
 # Python
-# =========================
+#############################################
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,9 +34,9 @@ __pycache__/
 *.pyd
 *.so
 
-# =========================
+#############################################
 # Virtual Environments
-# =========================
+#############################################
 .venv/
 venv/
 ENV/
@@ -18,13 +44,9 @@ env/
 .ENV/
 .python-version
 
-# =========================
-# Poetry / Packaging
-# =========================
-# NOTE: Usually you COMMIT poetry.lock for reproducible builds.
-# If you want to ignore it, uncomment:
-# poetry.lock
-
+#############################################
+# Packaging / Build Artifacts
+#############################################
 build/
 dist/
 *.egg-info/
@@ -32,9 +54,9 @@ dist/
 wheels/
 pip-wheel-metadata/
 
-# =========================
+#############################################
 # Testing / Coverage / Type Checks
-# =========================
+#############################################
 .pytest_cache/
 .coverage
 .coverage.*
@@ -44,62 +66,146 @@ htmlcov/
 .mypy_cache/
 .pyre/
 .pytype/
-ruff_cache/
+.ruff_cache/
 
-# =========================
+#############################################
+# Node / Frontend
+#############################################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+package-lock.json
+
+#############################################
+# Terraform / IaC
+#############################################
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+
+#############################################
+# Docker / Compose
+#############################################
+docker-compose.override.yml
+.docker/
+
+#############################################
+# Docs build output (optional)
+#############################################
+docs/_build/
+site/
+
+#############################################
+# Video & HLS Assets (avoid large binaries)
+#############################################
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.ts
+*.m4s
+*.m3u8
+!frontend/public/**/*.m3u8
+
+#############################################
 # Logs / Runtime
-# =========================
+#############################################
 *.log
 logs/
 *.pid
 *.pid.lock
+tmp/
+temp/
 
-# =========================
-# Jupyter
-# =========================
-.ipynb_checkpoints/
-
-# =========================
-# Data files (optional)
-# =========================
-*.csv
-*.tsv
-*.xlsx
-*.xls
-
-# =========================
-# Secrets / Env files
-# =========================
-.env
-.env.*
-*.env
-*.env.*
-.envrc
-*.pem
-*.key
-*.crt
-*.p12
-
-# =========================
+#############################################
 # IDE / Editors
-# =========================
+#############################################
 .vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
 .idea/
 *.iml
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
 
-# =========================
-# OS files
-# =========================
+#############################################
+# OS Files
+#############################################
 .DS_Store
-Thumbs.db
-
-# =========================
-# Docs build output (optional)
-# =========================
-docs/_build/
-site/
-
-# =========================
-# Misc
-# =========================
 .DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+#############################################
+# Observability Local Data
+#############################################
+grafana_data/
+prometheus_data/
+localstack_data/
+
+#############################################
+# Security Scan Output
+#############################################
+trivy-results.json
+gitleaks-report.json
+
+
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+package-lock.json
+
+# =========================
+# Docker / Compose
+# =========================
+docker-compose.override.yml
+.docker/
+
+# =========================
+# Terraform / IaC (future)
+# =========================
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.tfvars
+
+# =========================
+# Local volumes & temp data
+# =========================
+prometheus_data/
+grafana_data/
+localstack_data/
+tmp/
+temp/
+
+# =========================
+# Security / Secrets
+# =========================
+secrets/
+credentials/
+*.pem
+*.key
+*.cert
+*.p12

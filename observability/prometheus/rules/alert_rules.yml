@@ -1,0 +1,13 @@
+groups:
+  - name: slo_burn_rate_alerts
+    rules:
+      - alert: ManifestAvailabilityFastBurn
+        expr: slo:manifest_requests:error_rate5m > (1 - 0.999) * 14.4
+        for: 2m
+        labels:
+          severity: critical
+          team: video-sre
+        annotations:
+          summary: "Manifest availability fast burn"
+          description: "Fast error budget burn on manifest availability."
+

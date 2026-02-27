@@ -1,0 +1,3 @@
+# Trivy ignore file.
+# Add CVE IDs here with comments explaining why each is safe to ignore.
+
