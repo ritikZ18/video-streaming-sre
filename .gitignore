@@ -1,0 +1,105 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# =========================
+# Virtual Environments
+# =========================
+.venv/
+venv/
+ENV/
+env/
+.ENV/
+.python-version
+
+# =========================
+# Poetry / Packaging
+# =========================
+# NOTE: Usually you COMMIT poetry.lock for reproducible builds.
+# If you want to ignore it, uncomment:
+# poetry.lock
+
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# =========================
+# Testing / Coverage / Type Checks
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.pyre/
+.pytype/
+ruff_cache/
+
+# =========================
+# Logs / Runtime
+# =========================
+*.log
+logs/
+*.pid
+*.pid.lock
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Data files (optional)
+# =========================
+*.csv
+*.tsv
+*.xlsx
+*.xls
+
+# =========================
+# Secrets / Env files
+# =========================
+.env
+.env.*
+*.env
+*.env.*
+.envrc
+*.pem
+*.key
+*.crt
+*.p12
+
+# =========================
+# IDE / Editors
+# =========================
+.vscode/
+.idea/
+*.iml
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Docs build output (optional)
+# =========================
+docs/_build/
+site/
+
+# =========================
+# Misc
+# =========================
+.DS_Store?
