@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
     sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
 
+    # DynamoDB (catalog) — the worker flips a movie to "ready" on completion.
+    dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
+    dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
+    # Browser-facing origin base URL used to build playback manifest URLs.
+    origin_base_url: str = Field(default="http://localhost:8080", alias="ORIGIN_BASE_URL")
+
     ffmpeg_threads: int = Field(default=2, alias="FFMPEG_THREADS")
     transcode_timeout_seconds: int = Field(default=900, alias="TRANSCODE_TIMEOUT_SECONDS")
 

@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
     sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
 
+    # DynamoDB (catalog)
+    dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
+    dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
     # Upload behaviour
     upload_api_port: int = Field(default=8000, alias="UPLOAD_API_PORT")
     max_upload_size_mb: int = Field(default=500, alias="MAX_UPLOAD_SIZE_MB")

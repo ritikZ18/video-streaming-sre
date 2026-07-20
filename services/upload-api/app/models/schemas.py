@@ -26,12 +26,16 @@ class MovieBase(BaseModel):
 
 
 class MovieCreate(MovieBase):
-    pass
+    # Admins registering pre-existing HLS assets can supply the manifest URL.
+    manifest_url: str | None = None
 
 
 class Movie(MovieBase):
     id: str
     created_at: datetime
+    status: Literal["processing", "ready"] = "ready"
+    manifest_url: str | None = None
+    dash_url: str | None = None
 
 
 class MovieList(BaseModel):

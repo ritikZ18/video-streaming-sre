@@ -21,8 +21,8 @@ from app.metrics import (
     TRANSCODE_JOB_DURATION,
     start_metrics_server,
 )
-from app.packager import generate_master_manifest
-from app.transcoder import transcode_to_hls
+from app import catalog
+from app.transcoder import transcode_to_cmaf
 
 
 logger = structlog.get_logger("transcode-worker")
@@ -74,6 +74,15 @@ def _download_input(bucket: str, key: str, dest: Path) -> None:
     client.download_file(bucket, key, str(dest))
 
 
+# Streaming MIME types boto3 won't infer on its own.
+_CONTENT_TYPES = {
+    ".m3u8": "application/vnd.apple.mpegurl",
+    ".mpd": "application/dash+xml",
+    ".m4s": "video/iso.segment",
+    ".mp4": "video/mp4",
+}
+
+
 def _upload_directory(bucket: str, prefix: str, directory: Path) -> int:
     client = _s3()
     count = 0
@@ -82,7 +91,13 @@ def _upload_directory(bucket: str, prefix: str, directory: Path) -> int:
             continue
         rel = path.relative_to(directory)
         key = f"{prefix}/{rel.as_posix()}"
-        client.upload_file(str(path), bucket, key)
+        content_type = _CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+        client.upload_file(
+            str(path),
+            bucket,
+            key,
+            ExtraArgs={"ContentType": content_type},
+        )
         count += 1
     return count
 
@@ -103,10 +118,19 @@ def process_message(message: Dict[str, Any]) -> None:
 
     try:
         _download_input(settings.s3_video_bucket, s3_key, input_path)
-        playlists = list(transcode_to_hls(input_path, output_dir))
-        generate_master_manifest(playlists, output_dir / "master.m3u8")
+        manifests = transcode_to_cmaf(input_path, output_dir)
         uploaded = _upload_directory(settings.s3_segments_bucket, job_id, output_dir)
         SEGMENTS_UPLOADED.inc(uploaded)
+
+        manifest_url = f"{settings.origin_base_url}/hls/{job_id}/{manifests['hls'].name}"
+        dash_url = f"{settings.origin_base_url}/hls/{job_id}/{manifests['dash'].name}"
+        catalog.mark_ready(job_id, manifest_url, dash_url)
+        logger.info(
+            "manifests_generated",
+            job_id=job_id,
+            hls=manifest_url,
+            dash=dash_url,
+        )
     except Exception as exc:  # noqa: BLE001
         TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()
         logger.exception("job_failed", job_id=job_id, error=str(exc))
