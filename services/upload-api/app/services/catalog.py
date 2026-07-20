@@ -98,6 +98,17 @@ def get(movie_id: str) -> Movie | None:
     return _to_movie(item) if item else None
 
 
+def request_cancel(movie_id: str) -> None:
+    """Flag a processing job for cooperative cancellation. The worker polls this
+    flag (cancel_requested) and aborts + cleans up when it sees it."""
+    _table().update_item(
+        Key={"id": movie_id},
+        UpdateExpression="SET cancel_requested = :c",
+        ExpressionAttributeValues={":c": True},
+        ConditionExpression="attribute_exists(id)",
+    )
+
+
 def mark_ready(movie_id: str, manifest_url: str, dash_url: str) -> None:
     """Flip a processing entry to ready and attach its manifest URLs."""
     _table().update_item(
