@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Movie, Genre, Rating, Tag } from "../../lib/types";
 
 type UploadFormProps = {
   disabled: boolean;
+  file: File | null;
   onSubmitted: (meta: Partial<Movie>) => void;
 };
 
@@ -18,7 +19,17 @@ const TAGS: Exclude<Tag, null>[] = [
   "Popular",
 ];
 
-export function UploadForm({ disabled, onSubmitted }: UploadFormProps) {
+function formatDuration(totalSeconds: number): string {
+  const s = Math.round(totalSeconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+export function UploadForm({ disabled, file, onSubmitted }: UploadFormProps) {
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState<Genre>("Action");
   const [year, setYear] = useState("2025");
@@ -28,6 +39,24 @@ export function UploadForm({ disabled, onSubmitted }: UploadFormProps) {
   const [description, setDescription] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
+
+  // Auto-fill duration from the file's metadata. Best-effort: browsers can read
+  // mp4/mov/webm (not mkv); the worker sets the authoritative duration via
+  // ffprobe when transcoding regardless.
+  useEffect(() => {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        setDuration(formatDuration(video.duration));
+      }
+    };
+    video.onerror = () => URL.revokeObjectURL(url);
+    video.src = url;
+  }, [file]);
 
   const canSubmit = !disabled && !!title.trim() && !submitting;
 

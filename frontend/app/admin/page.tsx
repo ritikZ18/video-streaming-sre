@@ -9,7 +9,7 @@ import { UploadForm } from "../../components/upload/UploadForm";
 import { UploadProgress } from "../../components/upload/UploadProgress";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
 import type { Movie } from "../../lib/types";
-import { getJobStatus, uploadVideo, adminLogin } from "../../lib/api";
+import { getJobStatus, uploadVideo, adminLogin, MAX_UPLOAD_MB } from "../../lib/api";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
 export default function AdminPage() {
@@ -157,10 +157,17 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
         <UploadDropzone file={file} onFileSelected={setFile} />
         <UploadForm
           disabled={!file}
+          file={file}
           onSubmitted={async (meta) => {
             setMovieMeta(meta);
             setError(null);
             if (!file) return;
+            if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+              setError(
+                `File is too large (${(file.size / 1024 / 1024).toFixed(0)} MB). Max is ${MAX_UPLOAD_MB} MB.`,
+              );
+              return;
+            }
             try {
               const res = await uploadVideo(file, {
                 title: meta.title,

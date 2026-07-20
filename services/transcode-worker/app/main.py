@@ -22,10 +22,22 @@ from app.metrics import (
     start_metrics_server,
 )
 from app import catalog
-from app.transcoder import transcode_to_cmaf
+from app.transcoder import probe_duration, transcode_to_cmaf
 
 
 logger = structlog.get_logger("transcode-worker")
+
+
+def _format_duration(seconds: float) -> str:
+    """Render seconds as a human label, e.g. 3720 -> '1h 2m'."""
+    total = int(round(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _sqs() -> BaseClient:
@@ -124,7 +136,9 @@ def process_message(message: Dict[str, Any]) -> None:
 
         manifest_url = f"{settings.origin_base_url}/hls/{job_id}/{manifests['hls'].name}"
         dash_url = f"{settings.origin_base_url}/hls/{job_id}/{manifests['dash'].name}"
-        catalog.mark_ready(job_id, manifest_url, dash_url)
+        seconds = probe_duration(input_path)
+        duration = _format_duration(seconds) if seconds else None
+        catalog.mark_ready(job_id, manifest_url, dash_url, duration=duration)
         logger.info(
             "manifests_generated",
             job_id=job_id,

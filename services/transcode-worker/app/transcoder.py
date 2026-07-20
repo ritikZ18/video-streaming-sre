@@ -15,6 +15,28 @@ HLS_MASTER = "master.m3u8"
 SEGMENT_DURATION = 6
 
 
+def probe_duration(input_path: Path) -> float | None:
+    """Return the media duration in seconds (via ffprobe), or None."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(input_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def has_audio_stream(input_path: Path) -> bool:
     """Return True if the input has at least one audio stream (via ffprobe)."""
     result = subprocess.run(

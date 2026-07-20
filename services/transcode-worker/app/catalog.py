@@ -38,30 +38,42 @@ def _ensure_table() -> None:
     client.get_waiter("table_exists").wait(TableName=settings.dynamodb_table)
 
 
-def _update(movie_id: str, manifest_url: str, dash_url: str) -> None:
+def _update(
+    movie_id: str, manifest_url: str, dash_url: str, duration: str | None = None
+) -> None:
+    expr = "SET #s = :s, manifest_url = :m, dash_url = :d"
+    names = {"#s": "status"}
+    values: dict[str, str] = {":s": "ready", ":m": manifest_url, ":d": dash_url}
+    if duration:
+        # "duration" is a DynamoDB reserved word, so alias it.
+        expr += ", #dur = :dur"
+        names["#dur"] = "duration"
+        values[":dur"] = duration
     _table().update_item(
         Key={"id": movie_id},
-        UpdateExpression="SET #s = :s, manifest_url = :m, dash_url = :d",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":s": "ready",
-            ":m": manifest_url,
-            ":d": dash_url,
-        },
+        UpdateExpression=expr,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
     )
 
 
-def mark_ready(movie_id: str, manifest_url: str, dash_url: str) -> None:
-    """Flip the catalog entry for this job to ready and attach manifest URLs.
+def mark_ready(
+    movie_id: str,
+    manifest_url: str,
+    dash_url: str,
+    duration: str | None = None,
+) -> None:
+    """Flip the catalog entry for this job to ready and attach manifest URLs
+    (and the probed duration, if available).
 
     The movie id equals the job id (see upload-api), so a completed transcode
     maps directly onto its catalog row.
     """
     try:
-        _update(movie_id, manifest_url, dash_url)
+        _update(movie_id, manifest_url, dash_url, duration)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
             _ensure_table()
-            _update(movie_id, manifest_url, dash_url)
+            _update(movie_id, manifest_url, dash_url, duration)
             return
         raise

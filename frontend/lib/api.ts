@@ -8,6 +8,9 @@ export const API_URL =
 export const ORIGIN_URL =
   process.env.NEXT_PUBLIC_ORIGIN_URL ?? "http://localhost:8080";
 
+// Keep in sync with upload-api MAX_UPLOAD_SIZE_MB.
+export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 5000);
+
 // ---- Backend wire shapes (snake_case) ----
 
 type ApiMovie = {

@@ -50,16 +50,14 @@ def validate_magic_bytes(upload: UploadFile) -> None:
 def validate_size(upload: UploadFile) -> None:
     settings = get_settings()
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    # Read file once into memory for size check; for a portfolio project this is acceptable.
-    upload.file.seek(0)
-    data = upload.file.read()
-    size = len(data)
+    # Measure size via seek (do NOT read the whole file into memory).
+    upload.file.seek(0, 2)  # seek to end
+    size = upload.file.tell()
+    upload.file.seek(0)  # reset for downstream streaming upload
     if size > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Uploaded file exceeds maximum size",
         )
-    # Reset file handle so downstream can re-read from start.
-    upload.file.seek(0)
 
 
