@@ -24,6 +24,7 @@ from app.metrics import (
 from app import catalog
 from app.profiles import PROFILES
 from app.transcoder import (
+    JobCancelled,
     encode_audio,
     encode_rendition,
     extract_subtitle_to_vtt,
@@ -144,6 +145,48 @@ def _upload_directory(bucket: str, prefix: str, directory: Path) -> int:
     return count
 
 
+def _make_cancel_checker(job_id: str):
+    """A cheap should_cancel() the encoder can poll every progress line, while
+    the underlying DynamoDB read happens at most once every few seconds."""
+    state: Dict[str, Any] = {"t": 0.0, "cancelled": False}
+
+    def check() -> bool:
+        if state["cancelled"]:
+            return True
+        now = time.monotonic()
+        if now - state["t"] >= 3.0:
+            state["t"] = now
+            state["cancelled"] = catalog.is_canceled(job_id)
+        return state["cancelled"]
+
+    return check
+
+
+def _delete_prefix(bucket: str, prefix: str) -> None:
+    """Best-effort delete of every object under a prefix (partial segments)."""
+    client = _s3()
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/"):
+            objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objs:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": objs})
+    except (BotoCoreError, ClientError):
+        pass
+
+
+def _cleanup_canceled(job_id: str, s3_key: str) -> None:
+    """Tear down everything a canceled job left behind: catalog row, source
+    upload, and any partially-written HLS/DASH segments."""
+    settings = get_settings()
+    catalog.delete_row(job_id)
+    try:
+        _s3().delete_object(Bucket=settings.s3_video_bucket, Key=s3_key)
+    except (BotoCoreError, ClientError):
+        pass
+    _delete_prefix(settings.s3_segments_bucket, job_id)
+
+
 def process_message(message: Dict[str, Any]) -> None:
     """Process a single SQS message containing a transcode job."""
     settings = get_settings()
@@ -179,7 +222,16 @@ def process_message(message: Dict[str, Any]) -> None:
                 pstate["pct"], pstate["stage"], pstate["t"] = pct, stage, now
                 catalog.update_progress(job_id, pct, stage=stage)
 
+        # Cooperative cancellation: encoders poll should_cancel() per progress
+        # line; _ck() aborts the pipeline between stages if a cancel was flagged.
+        should_cancel = _make_cancel_checker(job_id)
+
+        def _ck() -> None:
+            if should_cancel():
+                raise JobCancelled()
+
         _emit(4, "download")
+        _ck()
 
         # 1) Video renditions, one-by-one (video only; audio handled separately).
         ranges = _rendition_ranges(len(PROFILES))
@@ -193,10 +245,12 @@ def process_message(message: Dict[str, Any]) -> None:
                 _emit(int(lo + (hi - lo) * p / 100), name)
 
             encode_rendition(input_path, out, profile, include_audio=False,
-                             total_seconds=seconds, on_progress=_cb)
+                             total_seconds=seconds, on_progress=_cb,
+                             should_cancel=should_cancel)
             video_paths.append(out)
 
         # 2) Every audio track (per language) -> AAC.
+        _ck()
         _emit(80, "audio")
         audio_tracks = []
         for a in media["audio"]:
@@ -205,6 +259,7 @@ def process_message(message: Dict[str, Any]) -> None:
             audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
 
         # 3) Package video + all audio into one CMAF set (HLS + DASH).
+        _ck()
         _emit(85, "package")
         manifests = package_cmaf(video_paths, audio_tracks, output_dir)
 
@@ -261,6 +316,13 @@ def process_message(message: Dict[str, Any]) -> None:
             audio=len(audio_meta),
             subs=len(subtitle_tracks),
         )
+    except JobCancelled:
+        # Cooperative cancel: tear down artifacts and return normally so the
+        # SQS message is deleted (not retried). Not counted as a failure.
+        TRANSCODE_JOBS_TOTAL.labels(status="canceled").inc()
+        logger.info("job_canceled", job_id=job_id)
+        _cleanup_canceled(job_id, s3_key)
+        return
     except Exception as exc:  # noqa: BLE001
         TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()
         logger.exception("job_failed", job_id=job_id, error=str(exc))

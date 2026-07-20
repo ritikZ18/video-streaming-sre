@@ -82,6 +82,25 @@ def _update(
     )
 
 
+def is_canceled(movie_id: str) -> bool:
+    """True if the upload-api flagged this job for cancellation. Best-effort:
+    any read error is treated as 'not canceled' so a transient blip never aborts
+    a healthy transcode."""
+    try:
+        item = _table().get_item(Key={"id": movie_id}).get("Item") or {}
+        return bool(item.get("cancel_requested"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def delete_row(movie_id: str) -> None:
+    """Remove a catalog row (used after a cancellation so it leaves the grid)."""
+    try:
+        _table().delete_item(Key={"id": movie_id})
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
     """Best-effort transcode progress (0-100) + current stage. Never raises."""
     try:
