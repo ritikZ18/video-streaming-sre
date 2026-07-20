@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Loader2 } from "lucide-react";
-import { getJobStatus } from "../../lib/api";
+import { Check, Loader2, X } from "lucide-react";
+import { cancelJob, getJobStatus } from "../../lib/api";
 
 type UploadProgressProps = {
   /** Real upload progress 0-100 (from XHR) before the job id exists. */
   uploadPct: number;
   jobId: string | null;
   onComplete: (streamUrl: string) => void;
+  /** Called after the transcode is successfully canceled. */
+  onCancel?: () => void;
 };
 
 type StepState = "done" | "active" | "pending";
@@ -46,12 +48,27 @@ const STAGE_LABEL: Record<string, string> = {
   upload: "Publishing segments",
 };
 
-export function UploadProgress({ uploadPct, jobId, onComplete }: UploadProgressProps) {
+export function UploadProgress({ uploadPct, jobId, onComplete, onCancel }: UploadProgressProps) {
   const [pct, setPct] = useState(0);
   const [stage, setStage] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
+
+  const handleCancel = async () => {
+    if (!jobId) return;
+    setCanceling(true);
+    setCancelError(null);
+    try {
+      await cancelJob(jobId);
+      onCancel?.();
+    } catch (e) {
+      setCancelError((e as Error).message);
+      setCanceling(false);
+    }
+  };
 
   useEffect(() => {
     if (!jobId) {
@@ -160,7 +177,7 @@ export function UploadProgress({ uploadPct, jobId, onComplete }: UploadProgressP
       {/* Overall bar + summary */}
       <div>
         <div className="flex items-center justify-between text-xs text-white/70">
-          <span>{summary}</span>
+          <span>{canceling ? "Canceling…" : summary}</span>
           <span>{barPct}%</span>
         </div>
         <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-white/10">
@@ -170,6 +187,26 @@ export function UploadProgress({ uploadPct, jobId, onComplete }: UploadProgressP
           />
         </div>
       </div>
+
+      {/* Cancel transcoding (only while a job is actively processing) */}
+      {jobId && !done && (
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={canceling}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {canceling ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <X className="h-3.5 w-3.5" />
+            )}
+            {canceling ? "Canceling…" : "Cancel transcoding"}
+          </button>
+          {cancelError && <span className="text-xs text-rose-400">{cancelError}</span>}
+        </div>
+      )}
     </div>
   );
 }

@@ -218,6 +218,18 @@ export async function getJobStatus(jobId: string): Promise<JobStatus> {
   return (await res.json()) as JobStatus;
 }
 
+/** Ask the worker to abort a still-processing transcode (admin only). */
+export async function cancelJob(jobId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/v1/jobs/${jobId}/cancel`, {
+    method: "POST",
+    headers: { ...authHeader() },
+  });
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Job already finished — nothing to cancel.");
+  if (res.status === 404) return; // already gone
+  if (!res.ok) throw new Error(`cancel failed: ${res.status}`);
+}
+
 export async function createMovie(
   payload: MovieCreatePayload,
 ): Promise<Movie> {

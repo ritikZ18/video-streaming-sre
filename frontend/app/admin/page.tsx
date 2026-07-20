@@ -105,6 +105,10 @@ function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
+// Survives a page refresh: the transcode runs server-side, so we only need to
+// remember which job to reattach the progress view to on reload.
+const ACTIVE_JOB_KEY = "streamsre.activeJob";
+
 function AdminPanel({ onLogout }: { onLogout: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [, setMovieMeta] = useState<Partial<Movie> | null>(null);
@@ -112,6 +116,30 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
   const [uploadPct, setUploadPct] = useState(0);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Reattach to an in-flight transcode after a reload (refresh-safe).
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_JOB_KEY);
+      if (saved) {
+        setJobId(saved);
+        setUploadPct(100); // the upload itself already finished
+      }
+    } catch {
+      /* localStorage unavailable — non-fatal */
+    }
+  }, []);
+
+  const clearJob = () => {
+    setJobId(null);
+    setUploadPct(0);
+    setStreamUrl(null);
+    try {
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
 
   return (
     <>
@@ -164,6 +192,11 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
                 (pct) => setUploadPct(pct),
               );
               setJobId(res.job_id);
+              try {
+                localStorage.setItem(ACTIVE_JOB_KEY, res.job_id);
+              } catch {
+                /* ignore */
+              }
             } catch (e) {
               setError((e as Error).message);
             }
@@ -172,7 +205,19 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
       </div>
 
       <div className="mt-10">
-        <UploadProgress uploadPct={uploadPct} jobId={jobId} onComplete={(url) => setStreamUrl(url)} />
+        <UploadProgress
+          uploadPct={uploadPct}
+          jobId={jobId}
+          onComplete={(url) => {
+            setStreamUrl(url);
+            try {
+              localStorage.removeItem(ACTIVE_JOB_KEY);
+            } catch {
+              /* ignore */
+            }
+          }}
+          onCancel={clearJob}
+        />
         {streamUrl && (
           <div className="mt-4 text-sm text-white/80">
             Stream ready:{" "}
