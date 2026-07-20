@@ -16,22 +16,31 @@ def _client() -> BaseClient:
     return session.client("s3", endpoint_url=settings.s3_endpoint_url)
 
 
+def _ensure_bucket(client: BaseClient, bucket: str) -> None:
+    """Create the bucket if it doesn't exist (local-dev parity with real AWS)."""
+    try:
+        client.head_bucket(Bucket=bucket)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"404", "NoSuchBucket", "NoSuchBucketPolicy"}:
+            client.create_bucket(Bucket=bucket)
+        else:
+            raise
+
+
 def upload_fileobj(bucket: str, key: str, fileobj: BinaryIO) -> None:
     client = _client()
     try:
+        # Ensure the bucket exists BEFORE the (single) upload. The previous
+        # create-on-error-and-retry left the file stream at EOF on the retry,
+        # producing a 0-byte object.
+        _ensure_bucket(client, bucket)
+        try:
+            fileobj.seek(0)
+        except (OSError, ValueError):
+            pass
         client.upload_fileobj(fileobj, bucket, key)
-    except ClientError as exc:  # pragma: no cover - network error
-        error_code = exc.response.get("Error", {}).get("Code")
-        if error_code in {"NoSuchBucket", "NoSuchBucketPolicy"}:
-            # Lazily create bucket in local dev (e.g. LocalStack) and retry once.
-            client.create_bucket(Bucket=bucket)
-            client.upload_fileobj(fileobj, bucket, key)
-            return
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to upload file to object storage",
-        ) from exc
-    except BotoCoreError as exc:  # pragma: no cover - network error
+    except (BotoCoreError, ClientError) as exc:  # pragma: no cover - network error
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to upload file to object storage",

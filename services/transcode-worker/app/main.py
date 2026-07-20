@@ -98,6 +98,10 @@ _CONTENT_TYPES = {
 
 def _upload_directory(bucket: str, prefix: str, directory: Path) -> int:
     client = _s3()
+    try:
+        client.head_bucket(Bucket=bucket)
+    except ClientError:
+        client.create_bucket(Bucket=bucket)
     count = 0
     for path in directory.rglob("*"):
         if not path.is_file():
