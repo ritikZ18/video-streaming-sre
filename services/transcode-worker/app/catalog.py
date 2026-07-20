@@ -44,6 +44,9 @@ def _update(
     dash_url: str,
     duration: str | None = None,
     thumbnail_url: str | None = None,
+    audio_tracks: list | None = None,
+    subtitle_tracks: list | None = None,
+    media_info: dict | None = None,
 ) -> None:
     expr = "SET #s = :s, manifest_url = :m, dash_url = :d, #p = :p, #stg = :stg"
     names = {"#s": "status", "#p": "progress", "#stg": "stage"}
@@ -62,6 +65,15 @@ def _update(
     if thumbnail_url:
         expr += ", thumbnail_url = :t"
         values[":t"] = thumbnail_url
+    if audio_tracks is not None:
+        expr += ", audio_tracks = :au"
+        values[":au"] = audio_tracks
+    if subtitle_tracks is not None:
+        expr += ", subtitle_tracks = :su"
+        values[":su"] = subtitle_tracks
+    if media_info is not None:
+        expr += ", media_info = :mi"
+        values[":mi"] = media_info
     _table().update_item(
         Key={"id": movie_id},
         UpdateExpression=expr,
@@ -96,18 +108,28 @@ def mark_ready(
     dash_url: str,
     duration: str | None = None,
     thumbnail_url: str | None = None,
+    audio_tracks: list | None = None,
+    subtitle_tracks: list | None = None,
+    media_info: dict | None = None,
 ) -> None:
-    """Flip the catalog entry for this job to ready and attach its manifest URLs
-    (plus probed duration and poster thumbnail, if available).
+    """Flip the catalog entry for this job to ready and attach its manifest URLs,
+    duration, thumbnail, audio/subtitle track lists and media metadata.
 
     The movie id equals the job id (see upload-api), so a completed transcode
     maps directly onto its catalog row.
     """
+    kw = dict(
+        duration=duration,
+        thumbnail_url=thumbnail_url,
+        audio_tracks=audio_tracks,
+        subtitle_tracks=subtitle_tracks,
+        media_info=media_info,
+    )
     try:
-        _update(movie_id, manifest_url, dash_url, duration, thumbnail_url)
+        _update(movie_id, manifest_url, dash_url, **kw)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
             _ensure_table()
-            _update(movie_id, manifest_url, dash_url, duration, thumbnail_url)
+            _update(movie_id, manifest_url, dash_url, **kw)
             return
         raise

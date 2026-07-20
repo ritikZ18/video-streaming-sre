@@ -24,11 +24,13 @@ from app.metrics import (
 from app import catalog
 from app.profiles import PROFILES
 from app.transcoder import (
+    encode_audio,
     encode_rendition,
+    extract_subtitle_to_vtt,
     extract_thumbnail,
-    has_audio_stream,
     package_cmaf,
     probe_duration,
+    probe_media,
 )
 
 
@@ -50,7 +52,7 @@ def _format_duration(seconds: float) -> str:
 def _rendition_ranges(n: int) -> list[tuple[int, int]]:
     """Overall-% window for each rendition (renditions occupy 5-85%; later,
     larger renditions get a bigger slice)."""
-    lo, hi = 5, 85
+    lo, hi = 5, 78
     weights = [i + 1 for i in range(n)]
     total = sum(weights) or 1
     ranges: list[tuple[int, int]] = []
@@ -115,6 +117,7 @@ _CONTENT_TYPES = {
     ".m4s": "video/iso.segment",
     ".mp4": "video/mp4",
     ".jpg": "image/jpeg",
+    ".vtt": "text/vtt",
 }
 
 
@@ -163,7 +166,8 @@ def process_message(message: Dict[str, Any]) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         seconds = probe_duration(input_path) or 0.0
-        audio = has_audio_stream(input_path)
+        media = probe_media(input_path)
+        base = f"{settings.origin_base_url}/hls/{job_id}"
 
         # Throttled catalog writer: overall progress % + current stage label.
         pstate: Dict[str, Any] = {"t": 0.0, "pct": -1, "stage": None}
@@ -177,46 +181,86 @@ def process_message(message: Dict[str, Any]) -> None:
 
         _emit(4, "download")
 
-        # Encode each rendition one-by-one; each reports its own stage + progress.
+        # 1) Video renditions, one-by-one (video only; audio handled separately).
         ranges = _rendition_ranges(len(PROFILES))
-        rendition_paths = []
+        video_paths = []
         for i, profile in enumerate(PROFILES):
             lo, hi = ranges[i]
-            out = renditions_dir / f"rendition_{profile.name}.mp4"
+            out = renditions_dir / f"v_{profile.name}.mp4"
             _emit(lo, profile.name)
 
             def _cb(p: int, lo=lo, hi=hi, name=profile.name) -> None:
                 _emit(int(lo + (hi - lo) * p / 100), name)
 
-            encode_rendition(input_path, out, profile, audio and i == 0, seconds, on_progress=_cb)
-            rendition_paths.append(out)
+            encode_rendition(input_path, out, profile, include_audio=False,
+                             total_seconds=seconds, on_progress=_cb)
+            video_paths.append(out)
 
-        # Package the renditions into one CMAF set (HLS + DASH), stream-copy.
-        _emit(87, "package")
-        manifests = package_cmaf(rendition_paths, output_dir, audio)
+        # 2) Every audio track (per language) -> AAC.
+        _emit(80, "audio")
+        audio_tracks = []
+        for a in media["audio"]:
+            ap = renditions_dir / f"a_{a['index']}.mp4"
+            encode_audio(input_path, ap, a["stream_index"])
+            audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
 
-        _emit(91, "thumbnail")
+        # 3) Package video + all audio into one CMAF set (HLS + DASH).
+        _emit(85, "package")
+        manifests = package_cmaf(video_paths, audio_tracks, output_dir)
+
+        # 4) Text subtitles -> sidecar WebVTT (image subs are listed, not converted).
+        _emit(89, "subtitles")
+        subtitle_tracks = []
+        for s in media["subtitles"]:
+            if not s["text"]:
+                continue
+            subs_dir = output_dir / "subs"
+            subs_dir.mkdir(exist_ok=True)
+            vtt = subs_dir / f"{s['language']}_{s['index']}.vtt"
+            if extract_subtitle_to_vtt(input_path, vtt, s["stream_index"]):
+                subtitle_tracks.append({
+                    "language": s["language"],
+                    "label": s["label"],
+                    "url": f"{base}/subs/{vtt.name}",
+                    "forced": s["forced"],
+                })
+
+        _emit(92, "thumbnail")
         thumb_path = output_dir / "thumbnail.jpg"
         thumb_at = max(1.0, min(seconds * 0.1, 60.0)) if seconds else 3.0
         extract_thumbnail(input_path, thumb_path, thumb_at)
 
-        _emit(94, "upload")
+        _emit(95, "upload")
         uploaded = _upload_directory(settings.s3_segments_bucket, job_id, output_dir)
         SEGMENTS_UPLOADED.inc(uploaded)
 
-        base = f"{settings.origin_base_url}/hls/{job_id}"
         manifest_url = f"{base}/{manifests['hls'].name}"
         dash_url = f"{base}/{manifests['dash'].name}"
         thumbnail_url = f"{base}/thumbnail.jpg" if thumb_path.exists() else None
         duration = _format_duration(seconds) if seconds else None
+
+        audio_meta = [{"language": a["language"], "label": a["label"]} for a in audio_tracks]
+        media_info = {
+            "video": media["video"],
+            "audio": audio_meta,
+            "subtitles": [{"language": s["language"], "label": s["label"]} for s in subtitle_tracks],
+        }
         catalog.mark_ready(
             job_id,
             manifest_url,
             dash_url,
             duration=duration,
             thumbnail_url=thumbnail_url,
+            audio_tracks=audio_meta,
+            subtitle_tracks=subtitle_tracks,
+            media_info=media_info,
         )
-        logger.info("manifests_generated", job_id=job_id, hls=manifest_url, dash=dash_url)
+        logger.info(
+            "manifests_generated",
+            job_id=job_id,
+            audio=len(audio_meta),
+            subs=len(subtitle_tracks),
+        )
     except Exception as exc:  # noqa: BLE001
         TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()
         logger.exception("job_failed", job_id=job_id, error=str(exc))
