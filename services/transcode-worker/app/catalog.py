@@ -39,16 +39,28 @@ def _ensure_table() -> None:
 
 
 def _update(
-    movie_id: str, manifest_url: str, dash_url: str, duration: str | None = None
+    movie_id: str,
+    manifest_url: str,
+    dash_url: str,
+    duration: str | None = None,
+    thumbnail_url: str | None = None,
 ) -> None:
-    expr = "SET #s = :s, manifest_url = :m, dash_url = :d"
-    names = {"#s": "status"}
-    values: dict[str, str] = {":s": "ready", ":m": manifest_url, ":d": dash_url}
+    expr = "SET #s = :s, manifest_url = :m, dash_url = :d, #p = :p"
+    names = {"#s": "status", "#p": "progress"}
+    values: dict[str, object] = {
+        ":s": "ready",
+        ":m": manifest_url,
+        ":d": dash_url,
+        ":p": 100,
+    }
     if duration:
         # "duration" is a DynamoDB reserved word, so alias it.
         expr += ", #dur = :dur"
         names["#dur"] = "duration"
         values[":dur"] = duration
+    if thumbnail_url:
+        expr += ", thumbnail_url = :t"
+        values[":t"] = thumbnail_url
     _table().update_item(
         Key={"id": movie_id},
         UpdateExpression=expr,
@@ -57,23 +69,37 @@ def _update(
     )
 
 
+def update_progress(movie_id: str, pct: int) -> None:
+    """Best-effort transcode progress update (0-100). Never raises."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression="SET #p = :p",
+            ExpressionAttributeNames={"#p": "progress"},
+            ExpressionAttributeValues={":p": pct},
+        )
+    except Exception:  # noqa: BLE001 - progress is non-critical
+        pass
+
+
 def mark_ready(
     movie_id: str,
     manifest_url: str,
     dash_url: str,
     duration: str | None = None,
+    thumbnail_url: str | None = None,
 ) -> None:
-    """Flip the catalog entry for this job to ready and attach manifest URLs
-    (and the probed duration, if available).
+    """Flip the catalog entry for this job to ready and attach its manifest URLs
+    (plus probed duration and poster thumbnail, if available).
 
     The movie id equals the job id (see upload-api), so a completed transcode
     maps directly onto its catalog row.
     """
     try:
-        _update(movie_id, manifest_url, dash_url, duration)
+        _update(movie_id, manifest_url, dash_url, duration, thumbnail_url)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
             _ensure_table()
-            _update(movie_id, manifest_url, dash_url, duration)
+            _update(movie_id, manifest_url, dash_url, duration, thumbnail_url)
             return
         raise

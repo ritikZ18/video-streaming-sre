@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 from app.config import get_settings
 from app.profiles import EncodingProfile, PROFILES
@@ -13,6 +14,30 @@ HLS_MASTER = "master.m3u8"
 
 # Segment duration in seconds (Apple's recommended HLS default; also used for DASH).
 SEGMENT_DURATION = 6
+
+
+def extract_thumbnail(input_path: Path, output_path: Path, at_seconds: float = 3.0) -> bool:
+    """Grab a single poster frame at ``at_seconds`` (scaled to 640px wide)."""
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(at_seconds),
+            "-i",
+            str(input_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=640:-2",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and output_path.exists()
 
 
 def probe_duration(input_path: Path) -> float | None:
@@ -167,19 +192,44 @@ def build_ffmpeg_command(
     return cmd
 
 
-def transcode_to_cmaf(input_path: Path, work_dir: Path) -> Dict[str, Path]:
+def transcode_to_cmaf(
+    input_path: Path,
+    work_dir: Path,
+    on_progress: Callable[[int], None] | None = None,
+) -> Dict[str, Path]:
     """
     Transcode ``input_path`` into a CMAF ABR ladder and return the paths of the
     generated HLS master playlist and DASH manifest.
 
-    Both manifests plus all shared ``.m4s`` segments are written into
-    ``work_dir`` and are meant to be uploaded verbatim to object storage.
+    If ``on_progress`` is given it is called with an integer percentage (0-99)
+    as ffmpeg advances, computed from ffmpeg's ``-progress`` output against the
+    probed total duration. Both manifests plus all shared ``.m4s`` segments are
+    written into ``work_dir`` for verbatim upload to object storage.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
+    total = probe_duration(input_path) or 0.0
     cmd = build_ffmpeg_command(input_path, work_dir, has_audio=has_audio_stream(input_path))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg transcode failed: {result.stderr}")
+    # Stream machine-readable progress on stdout; keep stderr in a temp file so
+    # a full stderr pipe can never deadlock the stdout reader on long encodes.
+    cmd = [cmd[0], "-progress", "pipe:1", "-nostats", *cmd[1:]]
+
+    with tempfile.TemporaryFile(mode="w+") as err_file:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file, text=True)
+        if proc.stdout is not None:
+            for raw in proc.stdout:
+                line = raw.strip()
+                if not (on_progress and total > 0 and line.startswith("out_time_us=")):
+                    continue
+                try:
+                    out_us = max(0, int(line.split("=", 1)[1]))
+                except ValueError:
+                    continue
+                pct = min(99, int((out_us / 1_000_000) / total * 100))
+                on_progress(pct)
+        proc.wait()
+        if proc.returncode != 0:
+            err_file.seek(0)
+            raise RuntimeError(f"ffmpeg transcode failed: {err_file.read()}")
 
     hls_master = work_dir / HLS_MASTER
     dash_manifest = work_dir / DASH_MANIFEST

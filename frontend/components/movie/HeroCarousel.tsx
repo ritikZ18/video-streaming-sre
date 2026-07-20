@@ -40,8 +40,12 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 1.02 }}
           transition={{ duration: 0.8, ease: "easeOut" }}
-          className="absolute inset-0"
-          style={{ backgroundImage: current.gradient }}
+          className="absolute inset-0 bg-cover bg-center"
+          style={
+            current.thumbnailUrl
+              ? { backgroundImage: `url("${current.thumbnailUrl}")` }
+              : { backgroundImage: current.gradient }
+          }
         >
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(0,0,0,0.1),rgba(0,0,0,0.9))]" />
           <div className="absolute inset-x-0 bottom-0 h-64 bg-gradient-to-t from-black via-black/60 to-transparent" />

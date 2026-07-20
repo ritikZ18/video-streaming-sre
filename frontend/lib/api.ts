@@ -1,5 +1,5 @@
 import type { Movie, Tag } from "./types";
-import { authHeader, setAdminToken } from "./auth";
+import { authHeader, getAdminToken, setAdminToken } from "./auth";
 
 // The browser talks to the host-exposed ports. Override at build time with
 // NEXT_PUBLIC_API_URL / NEXT_PUBLIC_ORIGIN_URL if you remap them.
@@ -24,7 +24,9 @@ type ApiMovie = {
   tag?: string | null;
   manifest_url?: string | null;
   dash_url?: string | null;
+  thumbnail_url?: string | null;
   status?: "processing" | "ready" | null;
+  progress?: number | null;
   created_at?: string;
 };
 
@@ -33,6 +35,7 @@ export type JobStatus = {
   job_id: string;
   status: "queued" | "processing" | "complete";
   stream_url: string | null;
+  progress: number;
 };
 
 export type MovieCreatePayload = {
@@ -81,6 +84,8 @@ export function mapMovie(m: ApiMovie): Movie {
     status: m.status ?? "ready",
     manifestUrl: m.manifest_url ?? null,
     dashUrl: m.dash_url ?? null,
+    thumbnailUrl: m.thumbnail_url ?? null,
+    progress: m.progress ?? 0,
   };
 }
 
@@ -93,9 +98,10 @@ export async function listMovies(): Promise<Movie[]> {
   return data.movies.map(mapMovie);
 }
 
-export async function uploadVideo(
+export function uploadVideo(
   file: File,
   meta?: Partial<MovieCreatePayload>,
+  onProgress?: (pct: number) => void,
 ): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
@@ -106,14 +112,33 @@ export async function uploadVideo(
       }
     }
   }
-  const res = await fetch(`${API_URL}/api/v1/upload`, {
-    method: "POST",
-    headers: { ...authHeader() },
-    body: form,
+  // XHR (not fetch) so we get real upload-progress events.
+  return new Promise<UploadResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/api/v1/upload`);
+    const token = getAdminToken();
+    if (token) xhr.setRequestHeader("Authorization", `Basic ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        reject(new Error("Not authorized — log in as admin."));
+      } else if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as UploadResponse);
+        } catch {
+          reject(new Error("Bad upload response"));
+        }
+      } else {
+        reject(new Error(`upload failed: ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload."));
+    xhr.send(form);
   });
-  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-  return (await res.json()) as UploadResponse;
 }
 
 /** Verify admin credentials against upload-api and, on success, store them. */

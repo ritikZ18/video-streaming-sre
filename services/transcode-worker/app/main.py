@@ -22,7 +22,7 @@ from app.metrics import (
     start_metrics_server,
 )
 from app import catalog
-from app.transcoder import probe_duration, transcode_to_cmaf
+from app.transcoder import extract_thumbnail, probe_duration, transcode_to_cmaf
 
 
 logger = structlog.get_logger("transcode-worker")
@@ -92,6 +92,7 @@ _CONTENT_TYPES = {
     ".mpd": "application/dash+xml",
     ".m4s": "video/iso.segment",
     ".mp4": "video/mp4",
+    ".jpg": "image/jpeg",
 }
 
 
@@ -130,15 +131,40 @@ def process_message(message: Dict[str, Any]) -> None:
 
     try:
         _download_input(settings.s3_video_bucket, s3_key, input_path)
-        manifests = transcode_to_cmaf(input_path, output_dir)
+
+        # Throttle catalog progress writes to ~once every 2s / on change.
+        progress_state = {"t": 0.0, "pct": -1}
+
+        def _on_progress(pct: int) -> None:
+            now = time.monotonic()
+            if pct != progress_state["pct"] and (now - progress_state["t"] >= 2 or pct >= 99):
+                progress_state["pct"] = pct
+                progress_state["t"] = now
+                catalog.update_progress(job_id, pct)
+
+        seconds = probe_duration(input_path) or 0.0
+        manifests = transcode_to_cmaf(input_path, output_dir, on_progress=_on_progress)
+
+        # Poster thumbnail from the source (~10% in, capped), uploaded with the rest.
+        thumb_path = output_dir / "thumbnail.jpg"
+        thumb_at = max(1.0, min(seconds * 0.1, 60.0)) if seconds else 3.0
+        extract_thumbnail(input_path, thumb_path, thumb_at)
+
         uploaded = _upload_directory(settings.s3_segments_bucket, job_id, output_dir)
         SEGMENTS_UPLOADED.inc(uploaded)
 
-        manifest_url = f"{settings.origin_base_url}/hls/{job_id}/{manifests['hls'].name}"
-        dash_url = f"{settings.origin_base_url}/hls/{job_id}/{manifests['dash'].name}"
-        seconds = probe_duration(input_path)
+        base = f"{settings.origin_base_url}/hls/{job_id}"
+        manifest_url = f"{base}/{manifests['hls'].name}"
+        dash_url = f"{base}/{manifests['dash'].name}"
+        thumbnail_url = f"{base}/thumbnail.jpg" if thumb_path.exists() else None
         duration = _format_duration(seconds) if seconds else None
-        catalog.mark_ready(job_id, manifest_url, dash_url, duration=duration)
+        catalog.mark_ready(
+            job_id,
+            manifest_url,
+            dash_url,
+            duration=duration,
+            thumbnail_url=thumbnail_url,
+        )
         logger.info(
             "manifests_generated",
             job_id=job_id,

@@ -54,9 +54,10 @@ def _to_item(movie: Movie) -> dict[str, Any]:
 
 def _to_movie(item: dict[str, Any]) -> Movie:
     data = dict(item)
-    year = data.get("year")
-    if isinstance(year, Decimal):
-        data["year"] = int(year)
+    # DynamoDB returns numbers as Decimal; coerce the int fields.
+    for key in ("year", "progress"):
+        if isinstance(data.get(key), Decimal):
+            data[key] = int(data[key])
     return Movie(**data)
 
 

@@ -9,7 +9,7 @@ import { UploadForm } from "../../components/upload/UploadForm";
 import { UploadProgress } from "../../components/upload/UploadProgress";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
 import type { Movie } from "../../lib/types";
-import { getJobStatus, uploadVideo, adminLogin, MAX_UPLOAD_MB } from "../../lib/api";
+import { uploadVideo, adminLogin, MAX_UPLOAD_MB } from "../../lib/api";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
 export default function AdminPage() {
@@ -109,29 +109,9 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [, setMovieMeta] = useState<Partial<Movie> | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [uploadPct, setUploadPct] = useState(0);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    if (!jobId) return;
-    const poll = async () => {
-      try {
-        const status = await getJobStatus(jobId);
-        if (status.status === "complete" && status.stream_url) {
-          setStreamUrl(status.stream_url);
-          return;
-        }
-        timer = setTimeout(poll, 3000);
-      } catch {
-        timer = setTimeout(poll, 5000);
-      }
-    };
-    void poll();
-    return () => {
-      if (timer) clearTimeout(timer);
-    };
-  }, [jobId]);
 
   return (
     <>
@@ -168,16 +148,21 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
               );
               return;
             }
+            setUploadPct(0);
             try {
-              const res = await uploadVideo(file, {
-                title: meta.title,
-                genre: meta.genre,
-                year: meta.year,
-                rating: meta.rating,
-                duration: meta.duration,
-                description: meta.description,
-                tag: meta.tag ?? undefined,
-              });
+              const res = await uploadVideo(
+                file,
+                {
+                  title: meta.title,
+                  genre: meta.genre,
+                  year: meta.year,
+                  rating: meta.rating,
+                  duration: meta.duration,
+                  description: meta.description,
+                  tag: meta.tag ?? undefined,
+                },
+                (pct) => setUploadPct(pct),
+              );
               setJobId(res.job_id);
             } catch (e) {
               setError((e as Error).message);
@@ -187,7 +172,7 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
       </div>
 
       <div className="mt-10">
-        <UploadProgress jobId={jobId} onComplete={(url) => setStreamUrl(url)} />
+        <UploadProgress uploadPct={uploadPct} jobId={jobId} onComplete={(url) => setStreamUrl(url)} />
         {streamUrl && (
           <div className="mt-4 text-sm text-white/80">
             Stream ready:{" "}

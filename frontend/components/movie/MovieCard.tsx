@@ -24,7 +24,15 @@ export function MovieCard({ movie, onClick, size = "normal" }: MovieCardProps) {
       onClick={() => onClick(movie)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ backgroundImage: movie.gradient }}
+      style={
+        movie.thumbnailUrl
+          ? {
+              backgroundImage: `url("${movie.thumbnailUrl}")`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }
+          : { backgroundImage: movie.gradient }
+      }
       className={`${baseClasses} ${dims} ${
         hovered ? "scale-105" : "scale-100"
       }`}

@@ -29,8 +29,12 @@ export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
           onClick={(event) => event.stopPropagation()}
         >
           <div
-            className="relative h-64"
-            style={{ backgroundImage: movie.gradient }}
+            className="relative h-64 bg-cover bg-center"
+            style={
+              movie.thumbnailUrl
+                ? { backgroundImage: `url("${movie.thumbnailUrl}")` }
+                : { backgroundImage: movie.gradient }
+            }
           >
             <div className="absolute inset-0 bg-gradient-to-t from-zinc-900 to-transparent" />
             <button

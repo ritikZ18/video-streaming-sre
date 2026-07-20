@@ -28,4 +28,8 @@ export type Movie = {
   manifestUrl?: string | null;
   /** DASH manifest URL for the same CMAF segments. */
   dashUrl?: string | null;
+  /** Poster frame extracted from the source video. */
+  thumbnailUrl?: string | null;
+  /** Transcode progress 0-100. */
+  progress?: number;
 };
