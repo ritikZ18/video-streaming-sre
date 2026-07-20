@@ -58,7 +58,15 @@ export default function UploadPage() {
             onSubmitted={async (meta) => {
               setMovieMeta(meta);
               if (!file) return;
-              const res = await uploadVideo(file);
+              const res = await uploadVideo(file, {
+                title: meta.title,
+                genre: meta.genre,
+                year: meta.year,
+                rating: meta.rating,
+                duration: meta.duration,
+                description: meta.description,
+                tag: meta.tag ?? undefined,
+              });
               setJobId(res.job_id);
             }}
           />

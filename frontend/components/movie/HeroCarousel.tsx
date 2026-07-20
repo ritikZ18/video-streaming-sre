@@ -8,9 +8,10 @@ import { Play } from "lucide-react";
 type HeroCarouselProps = {
   movies: Movie[];
   onMoreInfo: (movie: Movie) => void;
+  onPlay?: (movie: Movie) => void;
 };
 
-export function HeroCarousel({ movies, onMoreInfo }: HeroCarouselProps) {
+export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) {
   const featured = useMemo(
     () => (movies.length ? movies : []),
     [movies],
@@ -67,10 +68,13 @@ export function HeroCarousel({ movies, onMoreInfo }: HeroCarouselProps) {
           <div className="flex gap-3 pt-2">
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-2.5 text-sm font-bold text-black shadow-glow-soft transition-opacity hover:opacity-90"
+              onClick={() => onPlay?.(current)}
+              disabled={!onPlay || !current.manifestUrl}
+              title={current.manifestUrl ? "Play" : "Still processing"}
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-2.5 text-sm font-bold text-black shadow-glow-soft transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Play className="h-4 w-4 fill-black text-black" />
-              Play
+              {current.manifestUrl ? "Play" : "Processing…"}
             </button>
             <button
               type="button"

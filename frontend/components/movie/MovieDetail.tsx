@@ -7,9 +7,10 @@ import type { Movie } from "../../lib/types";
 type MovieDetailProps = {
   movie: Movie;
   onClose: () => void;
+  onPlay?: (movie: Movie) => void;
 };
 
-export function MovieDetail({ movie, onClose }: MovieDetailProps) {
+export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
   return (
     <AnimatePresence>
       <motion.div
@@ -70,9 +71,12 @@ export function MovieDetail({ movie, onClose }: MovieDetailProps) {
             <div className="flex gap-3 pt-1">
               <button
                 type="button"
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-black transition-opacity hover:opacity-90"
+                onClick={() => onPlay?.(movie)}
+                disabled={!onPlay || !movie.manifestUrl}
+                title={movie.manifestUrl ? "Play" : "Still processing"}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <span>Play</span>
+                <span>{movie.manifestUrl ? "Play" : "Processing…"}</span>
               </button>
               <button
                 type="button"

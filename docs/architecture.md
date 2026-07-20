@@ -1,195 +1,168 @@
-## Architecture – Mini Video Streaming Platform + SRE
+# Architecture — Mini Video Streaming Platform + SRE
 
-This document describes the **system architecture** for the mini video streaming platform, focusing on:
+This document describes the **system as it is actually built**: the components,
+how a request flows through them, where AWS is emulated locally by **floci**,
+and where the SRE/observability hooks attach.
 
-- Components and responsibilities.
-- Data flow for upload, playback, and telemetry.
-- Where observability and SRE concepts are attached.
-
----
-
-## 1. Components
-
-### 1.1 Upload API
-
-- **Tech**: Python 3.12, FastAPI, Uvicorn.
-- **Responsibilities**:
-  - Accept authenticated video uploads (multipart/form‑data).
-  - Validate file type, size, and basic metadata.
-  - Store raw file in an object store (e.g. S3 `raw-uploads` bucket).
-  - Enqueue a **transcode job** with job ID and metadata to a message queue (e.g. SQS).
-  - Expose job status via `GET /jobs/{id}`.
-  - Expose health endpoints (`/health`, `/ready`) and **Prometheus metrics**.
-
-### 1.2 Transcode Worker
-
-- **Tech**: Python worker with FFmpeg.
-- **Responsibilities**:
-  - Poll the transcode queue (SQS) for jobs.
-  - Download raw video from the `raw-uploads` bucket.
-  - Run FFmpeg to:
-    - Generate multiple renditions (e.g. 360p/720p/1080p).
-    - Package into HLS (master manifest + per‑variant manifests + segments).
-  - Write manifests and segments into a **segments bucket**.
-  - Update the **catalog database** with:
-    - Playback URLs (e.g. `https://cdn.example.com/movies/{id}/master.m3u8`).
-    - Technical metadata (duration, resolutions).
-  - Emit metrics:
-    - Job duration, success/failure count.
-    - Queue depth and processing lag.
-
-### 1.3 Origin Gateway
-
-- **Tech**: Nginx (or another high‑performance HTTP proxy).
-- **Responsibilities**:
-  - Serve HLS manifests and segments from the segments bucket (as an origin).
-  - Add **caching headers** (Cache‑Control) for efficient CDN behavior.
-  - Add security headers (HSTS, CSP, X‑Frame‑Options).
-  - Expose Nginx metrics (via exporter) to Prometheus:
-    - Request rates, status code breakdown, latency histograms.
-
-In production, origin typically sits behind a **CDN (CloudFront)** for global caching. In local dev, you can use Nginx directly.
-
-### 1.4 Web Player UI
-
-- **Tech**: React + hls.js (or native HLS), styled to look like **Apple TV**.
-- **Responsibilities**:
-  - Display:
-    - Hero banner with spotlight content.
-    - Horizontal carousels for genres, trending, etc.
-  - Fetch movie catalog data from the **Catalog API**.
-  - Start playback using the HLS manifest from the catalog.
-  - Send **beacons** to the Beacon Collector:
-    - Startup time, rebuffer events, bitrates, heartbeats.
-  - Provide an **“Add Movie”** panel that:
-    - Collects metadata (title, genre, year, rating, description, tag).
-    - Option 1: Calls Upload API to upload a file.
-    - Option 2: Calls Catalog API to register a movie with an existing manifest.
-
-### 1.5 Catalog Service (Database + API)
-
-- **Tech**: FastAPI + Postgres (or another relational DB).
-- **Responsibilities**:
-  - Store **movie metadata**:
-    - `id`, `title`, `description`, `genre`, `year`, `rating`, `duration`, `tag`.
-    - `manifest_url`, `thumbnail_url`, `created_at`, `updated_at`.
-  - Provide APIs used by the player:
-    - `GET /catalog/movies` – list with filters/search.
-    - `POST /catalog/movies` – create a new record.
-    - `GET /catalog/movies/{id}` – detailed view.
-  - Optionally, support simple lists like “Trending” or “New Release” using tags.
-
-### 1.6 Beacon Collector
-
-- **Tech**: FastAPI.
-- **Responsibilities**:
-  - Receive QoE events from the web player:
-    - `startup_time`, `rebuffer_events`, `session_id`, `movie_id`, `bitrate_changes`, etc.
-  - Validate payloads and transform into **Prometheus metrics**:
-    - Histograms (startup duration).
-    - Counters (rebuffer events, sessions).
-  - Provide metrics for SLOs related to **user experience**.
-
-### 1.7 Observability Stack
-
-- **Prometheus** – metrics database and alerting rules evaluation.
-- **Alertmanager** – routing and deduplicating alerts (Slack, PagerDuty).
-- **Grafana** – dashboards for:
-  - Backend health (Upload API, Transcoder, Origin).
-  - Pipeline health (queue metrics, job success/fail).
-  - QoE (startup time, rebuffering).
-  - SLOs and error budget burn.
+For the full narrative design (goals, data model, decisions), see
+[design.md](design.md). For endpoints, see [api-structure.md](api-structure.md).
+For the Terraform + floci story, see [infra-floci.md](infra-floci.md).
 
 ---
 
-## 2. Data Flows
+## 1. High-level diagram
 
-### 2.1 Upload Flow
+```mermaid
+flowchart TD
+    subgraph Browser
+      UI["Next.js Apple-TV UI\n(hls.js player)"]
+    end
 
-1. Client (UI or script) calls **Upload API**:
-   - `POST /upload` with video file + metadata.
-2. Upload API:
-   - Validates input.
-   - Streams file to `raw-uploads` bucket.
-   - Enqueues job to SQS with `job_id` and metadata.
-3. Transcode Worker:
-   - Dequeues job, downloads raw file.
-   - Runs FFmpeg to create HLS packages.
-   - Stores `master.m3u8` and segments in `segments` bucket.
-   - Writes or updates movie record in **catalog DB**.
-4. Client polls `GET /jobs/{id}` or catalog APIs to see if playback is ready.
+    subgraph Services["Docker Compose services"]
+      UP["upload-api\n:8000 (FastAPI)"]
+      TW["transcode-worker\n(FFmpeg, SQS consumer)"]
+      OG["origin\n:8080 (Nginx)"]
+      BC["beacon-collector\n:8001 (FastAPI)"]
+    end
 
-**SRE Hooks**:
+    subgraph floci["floci — local AWS emulator (:4566)"]
+      S3RAW[("S3: raw-uploads")]
+      S3SEG[("S3: hls-segments")]
+      SQS[["SQS: transcode-queue (+DLQ)"]]
+      DDB[("DynamoDB: catalog")]
+    end
 
-- Metrics on upload rate, validation failures, and queue lag.
-- Alerts if transcode queue backs up or DLQ contains messages.
+    subgraph Obs["Observability"]
+      PROM["Prometheus :9090"]
+      GRAF["Grafana :3000"]
+      AM["Alertmanager :9093"]
+    end
 
-### 2.2 Playback Flow
+    UI -- "upload (file+meta)" --> UP
+    UI -- "GET /movies (catalog)" --> UP
+    UI -- "QoE beacons" --> BC
+    UI -- "HLS/DASH manifests + segments" --> OG
 
-1. Client opens the Player UI.
-2. The Player calls:
-   - `GET /catalog/movies` to render hero and carousels.
-3. User clicks **Play**:
-   - Player uses `manifest_url` from the catalog (e.g. CloudFront URL).
-4. hls.js requests:
-   - Master manifest → variant manifest → segments.
-   - All requests go to **CDN → Origin → Segments bucket**.
+    UP -- "raw file" --> S3RAW
+    UP -- "job msg" --> SQS
+    UP -- "movie row (processing)" --> DDB
 
-**SRE Hooks**:
+    SQS --> TW
+    TW -- "download raw" --> S3RAW
+    TW -- "CMAF + HLS + DASH" --> S3SEG
+    TW -- "mark ready + manifest URLs" --> DDB
 
-- Nginx / origin metrics:
-  - `origin_http_requests_total`, `origin_request_duration_seconds_bucket`, etc.
-- SLOs:
-  - Manifest availability and latency.
-  - Segment latency.
+    OG -- "proxy + cache" --> S3SEG
 
-### 2.3 Telemetry (QoE) Flow
-
-1. The player measures video startup time, rebuffer events, and bitrates.
-2. Player sends batched beacons to **Beacon Collector**:
-   - `POST /beacon` with JSON payload.
-3. Beacon Collector transforms events into Prometheus metrics:
-   - `qoe_startup_duration_seconds_bucket`.
-   - `qoe_rebuffer_events_total`.
-   - `qoe_session_heartbeats_total`.
-4. Prometheus scrapes `/metrics` and recording rules compute:
-   - P95 startup time.
-   - Rebuffer ratio.
-   - Error budget burn for QoE‑related SLOs.
+    UP -- "/metrics" --> PROM
+    TW -- "/metrics :9100" --> PROM
+    BC -- "/metrics" --> PROM
+    OG -- "nginx_status :9113" --> PROM
+    PROM --> GRAF
+    PROM --> AM
+```
 
 ---
 
-## 3. SRE & Observability Anchors
+## 2. Components
 
-This architecture is specifically designed to highlight SRE concepts:
+| Component | Tech | Port(s) | Responsibility |
+|---|---|---|---|
+| **Web player** (`frontend/`) | Next.js 14, React, hls.js, Tailwind | 3001 | Apple-TV–style catalog UI; uploads; HLS playback; QoE beacons |
+| **Upload API** (`services/upload-api`) | Python 3.12, FastAPI | 8000 | Validate + store uploads (S3), enqueue transcode (SQS), own the catalog (DynamoDB), job status |
+| **Transcode Worker** (`services/transcode-worker`) | Python + FFmpeg | 9100 (metrics) | Consume SQS, one FFmpeg pass → CMAF + HLS + DASH, upload to segments bucket, mark catalog ready |
+| **Origin** (`services/origin`) | Nginx | 8080, 9113 (metrics) | Proxy + cache manifests/segments from the S3 segments bucket; CDN-edge stand-in |
+| **Beacon Collector** (`services/beacon-collector`) | Python 3.12, FastAPI | 8001 | Ingest player QoE events → Prometheus metrics |
+| **Prometheus** | Prometheus | 9090 | Scrape metrics; evaluate recording + alert rules |
+| **Grafana** | Grafana | 3000 | Dashboards (backend, pipeline, QoE, SLOs) |
+| **Alertmanager** | Alertmanager | 9093 | Route/dedupe alerts |
+| **floci** (external stack) | floci binary | 4566 | Local AWS emulator: S3, SQS, DynamoDB |
 
-- **Golden signals**:
-  - Latency, traffic, errors, and saturation for each service.
-- **SLOs & SLIs**:
-  - Availability and latency for manifest/segment requests.
-  - QoE metrics (startup time, rebuffering).
-- **Burn‑rate alerts**:
-  - Fast‑burn (1h/6h) for acute outages.
-  - Slow‑burn (longer windows) for gradual degradation.
-- **Runbooks**:
-  - For high manifest error rate, high transcode queue depth, origin 5xx spikes, etc.
-- **Chaos**:
-  - Kill origin, inject latency, or corrupt segments to prove alerts and SLOs work.
+**AWS resources (in floci, provisioned by Terraform):**
+
+| Resource | Name | Used by |
+|---|---|---|
+| S3 bucket | `streamsre-raw-uploads` | upload-api (write), worker (read) |
+| S3 bucket | `streamsre-hls-segments` | worker (write), origin (read) |
+| SQS queue (+DLQ) | `streamsre-transcode-queue` | upload-api (send), worker (receive) |
+| DynamoDB table | `streamsre-catalog` | upload-api (CRUD), worker (update status) |
 
 ---
 
-## 4. Environments & Deployment (Planned)
+## 3. Data flows
 
-For now, this document focuses on architecture; full deployment (Terraform, ECS, CloudFront, etc.) will come later. The intended pattern is:
+### 3.1 Upload → transcode → ready
 
-- **Local**:
-  - Docker Compose + LocalStack S3/SQS + local Postgres.
-  - All services on a single machine for fast iteration.
-- **Staging / Prod** (future):
-  - ECS Fargate services for Upload API, Transcoder, Origin, Beacon Collector.
-  - Managed Postgres (RDS) for the catalog.
-  - S3 buckets and CloudFront for video delivery.
-  - Prometheus/Grafana/Alertmanager running as separate ECS services or hosted solutions.
+1. UI `POST /api/v1/upload` (multipart: file + optional title/genre/year/…).
+2. **upload-api**: validates → puts raw file to `raw-uploads` → writes a
+   DynamoDB catalog row with `status=processing` (the **movie id is the job id**)
+   → enqueues an SQS message `{job_id, s3_key}`.
+3. **transcode-worker**: receives the job, downloads the raw file, runs **one**
+   FFmpeg pass producing CMAF (fMP4) segments plus `master.m3u8` (HLS) and
+   `manifest.mpd` (DASH), uploads everything to `hls-segments/<job_id>/`, then
+   updates the DynamoDB row to `status=ready` with the manifest URLs.
+4. UI polls `GET /api/v1/jobs/{job_id}` (S3-derived: complete once
+   `master.m3u8` exists) and/or re-fetches the catalog.
 
-The important part for interviews is that you can explain **how each component scales** and **what failures look like** (e.g. transcode worker stuck, origin slow, bucket permission issues), then tie that back to metrics and runbooks.
+### 3.2 Playback
 
+1. UI `GET /api/v1/movies/` renders the hero + genre rows.
+2. Click **Play** → navigate to `/player?url=<manifest_url>`.
+3. hls.js requests `master.m3u8` → media playlists → `.m4s` segments, all via
+   the **origin** (`:8080/hls/...`), which proxies and caches the S3 segments
+   bucket. DASH players can use `manifest.mpd` from the same segments.
+
+### 3.3 Telemetry (QoE)
+
+1. The player measures startup time, rebuffering, bitrate switches, errors.
+2. It `POST`s batches to **beacon-collector** `POST /api/v1/beacon/`.
+3. The collector converts events into Prometheus metrics (startup histogram,
+   rebuffer counters, session counters), scraped by Prometheus.
+
+---
+
+## 4. Local AWS: floci + Terraform
+
+- **floci** runs as its own stack (`~/floci-stack`), listening on
+  `http://localhost:4566` and speaking the real AWS wire protocol. It replaces
+  what would be AWS (or LocalStack) in dev — no code changes, just the endpoint.
+- **Terraform** (`infra/terraform`) provisions the S3 buckets, SQS queues, and
+  DynamoDB table **into floci** (path-style S3, dummy creds, `:4566` endpoints).
+- Containers reach floci at `host.docker.internal:4566`; host tools (Terraform,
+  AWS CLI) use `localhost:4566`.
+- As a fallback, every service **lazily self-creates** its resource on first use,
+  so the stack works even if `terraform apply` is skipped.
+
+See [infra-floci.md](infra-floci.md) for full details and the real→prod mapping.
+
+---
+
+## 5. SRE & observability anchors
+
+- **Golden signals** per service: latency, traffic, errors, saturation.
+- **Metrics**: `upload_api_http_*` (upload-api), transcode job duration / queue
+  depth / segments uploaded (worker, `:9100`), `qoe_*` (beacon), nginx stub
+  status (origin, `:9113`).
+- **SLOs / burn-rate alerts** (`slo/`, `observability/prometheus/rules`):
+  manifest/segment availability + latency, transcode success, QoE startup and
+  rebuffer ratio; multi-window fast/slow burn.
+- **Runbooks** (`runbooks/`): high manifest error rate, transcode queue backup /
+  DLQ, origin 5xx spikes.
+- **Chaos** (`chaos/`): kill origin, inject latency — prove the alerts + SLOs.
+
+---
+
+## 6. Deployment mapping (local → cloud)
+
+Everything here is designed to lift onto real AWS by swapping the floci endpoint
+for real service endpoints:
+
+| Local (this repo) | Real AWS |
+|---|---|
+| floci S3 | S3 |
+| floci SQS | SQS |
+| floci DynamoDB | DynamoDB |
+| Nginx origin | S3 + CloudFront (OAC) |
+| Docker Compose | ECS Fargate / EKS |
+| Prometheus + Grafana | Amazon Managed Prometheus/Grafana or CloudWatch |
+| Terraform → floci | Same Terraform → AWS (drop the `endpoints{}`/skip_* in `provider.tf`) |
