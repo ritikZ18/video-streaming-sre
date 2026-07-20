@@ -5,6 +5,8 @@ import { ChevronLeft } from "lucide-react";
 import { Navbar } from "../../components/layout/Navbar";
 import { Footer } from "../../components/layout/Footer";
 import { VideoPlayer } from "../../components/player/VideoPlayer";
+import { getMovie } from "../../lib/api";
+import type { SubtitleTrack } from "../../lib/types";
 
 export default function PlayerPage() {
   const [p, setP] = useState<{
@@ -13,16 +15,27 @@ export default function PlayerPage() {
     poster: string | null;
     id: string | null;
   }>({ url: null, title: null, poster: null, id: null });
+  const [subs, setSubs] = useState<SubtitleTrack[]>([]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const q = new URLSearchParams(window.location.search);
-    setP({
-      url: q.get("url"),
-      title: q.get("title"),
-      poster: q.get("poster"),
-      id: q.get("id"),
-    });
+    const id = q.get("id");
+    setP({ url: q.get("url"), title: q.get("title"), poster: q.get("poster"), id });
+
+    // Real (catalog) movies: fetch subtitle tracks + authoritative metadata.
+    if (id) {
+      void getMovie(id).then((m) => {
+        if (!m) return;
+        setSubs(m.subtitleTracks ?? []);
+        setP((prev) => ({
+          url: m.manifestUrl ?? prev.url,
+          title: m.title ?? prev.title,
+          poster: m.thumbnailUrl ?? prev.poster,
+          id,
+        }));
+      });
+    }
   }, []);
 
   return (
@@ -38,7 +51,13 @@ export default function PlayerPage() {
             <ChevronLeft className="h-4 w-4" /> Back
           </button>
 
-          <VideoPlayer src={p.url} title={p.title} poster={p.poster} contentId={p.id} />
+          <VideoPlayer
+            src={p.url}
+            title={p.title}
+            poster={p.poster}
+            contentId={p.id}
+            subtitleTracks={subs}
+          />
 
           {p.title && (
             <h1 className="mt-4 text-xl font-bold tracking-tight">{p.title}</h1>

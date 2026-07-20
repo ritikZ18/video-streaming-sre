@@ -12,6 +12,19 @@ export type Tag =
 
 export type MovieStatus = "processing" | "ready";
 
+export type AudioTrack = { language: string; label: string };
+export type SubtitleTrack = {
+  language: string;
+  label: string;
+  url: string;
+  forced?: boolean;
+};
+export type MediaInfo = {
+  video?: { codec?: string | null; width?: number | null; height?: number | null } | null;
+  audio?: { language: string; label: string }[];
+  subtitles?: { language: string; label: string }[];
+};
+
 export type Movie = {
   id: string;
   title: string;
@@ -34,4 +47,7 @@ export type Movie = {
   progress?: number;
   /** Current transcode stage (download, 360p, 720p, 1080p, package, ...). */
   stage?: string | null;
+  audioTracks?: AudioTrack[];
+  subtitleTracks?: SubtitleTrack[];
+  mediaInfo?: MediaInfo | null;
 };

@@ -1,4 +1,4 @@
-import type { Movie, Tag } from "./types";
+import type { AudioTrack, MediaInfo, Movie, SubtitleTrack, Tag } from "./types";
 import { authHeader, getAdminToken, setAdminToken } from "./auth";
 
 // The browser talks to the host-exposed ports. Override at build time with
@@ -66,6 +66,9 @@ type ApiMovie = {
   status?: "processing" | "ready" | null;
   progress?: number | null;
   stage?: string | null;
+  audio_tracks?: AudioTrack[];
+  subtitle_tracks?: SubtitleTrack[];
+  media_info?: MediaInfo | null;
   created_at?: string;
 };
 
@@ -127,7 +130,16 @@ export function mapMovie(m: ApiMovie): Movie {
     thumbnailUrl: m.thumbnail_url ?? null,
     progress: m.progress ?? 0,
     stage: m.stage ?? null,
+    audioTracks: m.audio_tracks ?? [],
+    subtitleTracks: m.subtitle_tracks ?? [],
+    mediaInfo: m.media_info ?? null,
   };
+}
+
+export async function getMovie(id: string): Promise<Movie | null> {
+  const res = await fetch(`${API_URL}/api/v1/movies/${id}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  return mapMovie((await res.json()) as ApiMovie);
 }
 
 // ---- API calls ----
