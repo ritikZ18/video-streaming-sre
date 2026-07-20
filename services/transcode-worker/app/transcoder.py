@@ -6,8 +6,20 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+import structlog
+
 from app.config import get_settings
 from app.profiles import EncodingProfile, PROFILES
+
+logger = structlog.get_logger()
+
+
+class JobCancelled(Exception):
+    """Raised when a cancel was requested mid-transcode so the pipeline aborts.
+
+    Deliberately NOT a RuntimeError, so the NVENC->CPU fallback in
+    encode_rendition does not swallow it — cancellation must propagate.
+    """
 
 # Subtitle codecs we can convert to WebVTT (text-based). Image subs (PGS/VobSub)
 # are detected but not converted (would need OCR).
@@ -35,6 +47,7 @@ HLS_MASTER = "master.m3u8"
 SEGMENT_DURATION = 6
 
 ProgressCb = Callable[[int], None]
+CancelCb = Callable[[], bool]
 
 
 def has_audio_stream(input_path: Path) -> bool:
@@ -140,15 +153,27 @@ def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: i
     return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
 
 
-def _run_ffmpeg_progress(cmd: List[str], total: float, on_progress: ProgressCb | None) -> None:
+def _run_ffmpeg_progress(
+    cmd: List[str],
+    total: float,
+    on_progress: ProgressCb | None,
+    should_cancel: CancelCb | None = None,
+) -> None:
     """Run ffmpeg, streaming -progress (out_time_us) into on_progress (0-100).
 
     stderr goes to a temp file so a full stderr pipe can't deadlock the reader.
+    If should_cancel() returns True mid-encode, the ffmpeg process is killed and
+    JobCancelled is raised (checked on each progress line; the callback itself is
+    throttled by the caller so this stays cheap).
     """
     with tempfile.TemporaryFile(mode="w+") as err_file:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file, text=True)
         if proc.stdout is not None:
             for raw in proc.stdout:
+                if should_cancel and should_cancel():
+                    proc.kill()
+                    proc.wait()
+                    raise JobCancelled()
                 line = raw.strip()
                 if not (on_progress and total > 0 and line.startswith("out_time_us=")):
                     continue
@@ -168,23 +193,29 @@ def build_rendition_command(
     output_path: Path,
     profile: EncodingProfile,
     include_audio: bool,
+    use_nvenc: bool | None = None,
 ) -> List[str]:
     """ffmpeg command to encode ONE rendition to an MP4 (with per-rendition progress).
 
-    Uses NVENC + CUDA decode when USE_NVENC is set (GPU), else libx264 veryfast (CPU).
+    Uses NVENC + CUDA decode when use_nvenc is set (defaults to the USE_NVENC
+    setting), else libx264 veryfast (CPU). Pass use_nvenc=False to force the CPU
+    path — used as the automatic fallback when the GPU encoder is unavailable.
     """
     settings = get_settings()
+    if use_nvenc is None:
+        use_nvenc = settings.use_nvenc
     cmd: List[str] = [
         "ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error",
     ]
-    if settings.use_nvenc:
+    if use_nvenc:
         cmd += ["-hwaccel", "cuda"]
     cmd += ["-threads", str(settings.ffmpeg_threads), "-i", str(input_path)]
 
-    # format=yuv420p forces 4:2:0 so every browser/device can decode it.
+    # format=yuv420p forces 4:2:0 so every browser/device can decode it
+    # (also downconverts 10-bit HDR/HEVC sources to 8-bit SDR).
     cmd += ["-vf", f"scale={profile.width}:{profile.height},format=yuv420p"]
 
-    if settings.use_nvenc:
+    if use_nvenc:
         cmd += [
             "-c:v", "h264_nvenc", "-preset", settings.nvenc_preset,
             "-b:v", profile.video_bitrate, "-maxrate", profile.maxrate,
@@ -217,10 +248,35 @@ def encode_rendition(
     include_audio: bool,
     total_seconds: float,
     on_progress: ProgressCb | None = None,
+    should_cancel: CancelCb | None = None,
 ) -> Path:
-    """Encode a single rendition MP4, reporting 0-100 progress for THIS rendition."""
-    cmd = build_rendition_command(input_path, output_path, profile, include_audio)
-    _run_ffmpeg_progress(cmd, total_seconds, on_progress)
+    """Encode a single rendition MP4, reporting 0-100 progress for THIS rendition.
+
+    When NVENC is enabled but the GPU encoder is unavailable at runtime (missing
+    driver libs, exhausted encode sessions, unsupported input), the first attempt
+    fails; we transparently retry on CPU (libx264) so a job never hard-sticks.
+    A JobCancelled from should_cancel() is re-raised (not treated as an NVENC
+    failure) so cancellation aborts instead of silently retrying on CPU.
+    """
+    settings = get_settings()
+    if settings.use_nvenc:
+        gpu_cmd = build_rendition_command(
+            input_path, output_path, profile, include_audio, use_nvenc=True
+        )
+        try:
+            _run_ffmpeg_progress(gpu_cmd, total_seconds, on_progress, should_cancel)
+            return output_path
+        except RuntimeError as exc:
+            logger.warning(
+                "nvenc_failed_falling_back_to_cpu",
+                rendition=profile.name,
+                error=str(exc)[:300],
+            )
+
+    cpu_cmd = build_rendition_command(
+        input_path, output_path, profile, include_audio, use_nvenc=False
+    )
+    _run_ffmpeg_progress(cpu_cmd, total_seconds, on_progress, should_cancel)
     return output_path
 
 

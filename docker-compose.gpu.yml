@@ -8,6 +8,19 @@ services:
   transcode-worker:
     environment:
       USE_NVENC: "1"
+      # 'video' is what mounts libnvcuvid.so.1 (NVDEC) + libnvidia-encode.so.1
+      # (NVENC). Without it the container gets nvidia-smi/CUDA but ffmpeg's
+      # h264_nvenc/-hwaccel cuda fail with "Cannot load libnvcuvid.so.1".
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility,video"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      # WSL2 keeps the NVENC/NVDEC codec libs in /usr/lib/wsl/lib, which the
+      # nvidia container runtime does NOT inject. Bind-mount it (below) and put
+      # it on the linker path so ffmpeg can dlopen the encode/decode libs.
+      LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+    volumes:
+      # Host WSL2 GPU user-mode driver libs (libnvcuvid, libnvidia-encode, ...).
+      # Harmless no-op on native Linux hosts that lack this path.
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
     deploy:
       resources:
         reservations:
