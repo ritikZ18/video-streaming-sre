@@ -53,13 +53,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # --- GPU (optional): uncomment once nvidia-container-toolkit is installed ---
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   # --- Origin (Nginx) ---
   origin:

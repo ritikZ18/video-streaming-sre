@@ -1,0 +1,17 @@
+# GPU override — applied automatically by start.sh when an NVIDIA GPU AND the
+# nvidia container runtime are both available:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# It reserves the GPU for the transcode worker and turns on NVENC (h264_nvenc +
+# CUDA decode). Requires nvidia-container-toolkit on the host.
+services:
+  transcode-worker:
+    environment:
+      USE_NVENC: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

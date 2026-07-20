@@ -66,11 +66,38 @@ else
   log "Terraform not installed — services will self-create S3/SQS/DynamoDB on first use"
 fi
 
-# 4) Application services ----------------------------------------------------
-log "Building & starting services (docker compose)"
-docker compose up -d --build
+# 4) GPU detection -----------------------------------------------------------
+# Use NVENC only if an NVIDIA GPU AND the docker nvidia runtime are both present.
+COMPOSE_ARGS=""
+detect_gpu() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  nvidia-smi -L >/dev/null 2>&1 || return 1
+  if docker info 2>/dev/null | grep -qiE 'Runtimes:.*nvidia' \
+     || command -v nvidia-container-runtime >/dev/null 2>&1; then
+    return 0
+  fi
+  return 2  # GPU present, but no container runtime
+}
 
-# 5) Optional demo seed ------------------------------------------------------
+detect_gpu; gpu=$?
+if [ "$gpu" -eq 0 ]; then
+  log "NVIDIA GPU + container runtime detected -> enabling NVENC (GPU transcode)"
+  COMPOSE_ARGS="-f docker-compose.yml -f docker-compose.gpu.yml"
+elif [ "$gpu" -eq 2 ]; then
+  log "NVIDIA GPU detected but nvidia-container-toolkit is not set up -> CPU transcode"
+  echo "  Enable the GPU with:"
+  echo "    sudo apt-get install -y nvidia-container-toolkit"
+  echo "    sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+  echo "  then re-run ./start.sh"
+else
+  log "No NVIDIA GPU detected -> CPU transcode"
+fi
+
+# 5) Application services -----------------------------------------------------
+log "Building & starting services (docker compose)"
+docker compose $COMPOSE_ARGS up -d --build
+
+# 6) Optional demo seed ------------------------------------------------------
 if [ "${1:-}" = "--seed" ]; then
   log "Seeding a generated demo video (waiting for the API to be ready)"
   sleep 8
