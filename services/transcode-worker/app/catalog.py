@@ -45,13 +45,14 @@ def _update(
     duration: str | None = None,
     thumbnail_url: str | None = None,
 ) -> None:
-    expr = "SET #s = :s, manifest_url = :m, dash_url = :d, #p = :p"
-    names = {"#s": "status", "#p": "progress"}
+    expr = "SET #s = :s, manifest_url = :m, dash_url = :d, #p = :p, #stg = :stg"
+    names = {"#s": "status", "#p": "progress", "#stg": "stage"}
     values: dict[str, object] = {
         ":s": "ready",
         ":m": manifest_url,
         ":d": dash_url,
         ":p": 100,
+        ":stg": "ready",
     }
     if duration:
         # "duration" is a DynamoDB reserved word, so alias it.
@@ -69,14 +70,21 @@ def _update(
     )
 
 
-def update_progress(movie_id: str, pct: int) -> None:
-    """Best-effort transcode progress update (0-100). Never raises."""
+def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
+    """Best-effort transcode progress (0-100) + current stage. Never raises."""
     try:
+        expr = "SET #p = :p"
+        names = {"#p": "progress"}
+        values: dict[str, object] = {":p": pct}
+        if stage is not None:
+            expr += ", #stg = :st"
+            names["#stg"] = "stage"
+            values[":st"] = stage
         _table().update_item(
             Key={"id": movie_id},
-            UpdateExpression="SET #p = :p",
-            ExpressionAttributeNames={"#p": "progress"},
-            ExpressionAttributeValues={":p": pct},
+            UpdateExpression=expr,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
         )
     except Exception:  # noqa: BLE001 - progress is non-critical
         pass

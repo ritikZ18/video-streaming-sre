@@ -47,8 +47,19 @@ services:
       SQS_TRANSCODE_QUEUE_URL: ${SQS_TRANSCODE_QUEUE_URL:-http://host.docker.internal:4566/000000000000/streamsre-transcode-queue}
       # Browser-facing origin URL baked into stored manifest URLs.
       ORIGIN_BASE_URL: ${ORIGIN_BASE_URL:-http://localhost:8080}
+      # GPU encode: set USE_NVENC=1 AFTER installing nvidia-container-toolkit on
+      # the host and uncommenting the `deploy.resources` block below.
+      USE_NVENC: ${USE_NVENC:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # --- GPU (optional): uncomment once nvidia-container-toolkit is installed ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   # --- Origin (Nginx) ---
   origin:

@@ -14,6 +14,7 @@ class JobStatusResponse(BaseModel):
     status: Literal["queued", "processing", "complete"]
     stream_url: str | None = None
     progress: int = 0
+    stage: str | None = None
 
 
 class MovieBase(BaseModel):
@@ -39,6 +40,7 @@ class Movie(MovieBase):
     dash_url: str | None = None
     thumbnail_url: str | None = None
     progress: int = 0
+    stage: str | None = None
 
 
 class MovieList(BaseModel):

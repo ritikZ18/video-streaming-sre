@@ -32,4 +32,6 @@ export type Movie = {
   thumbnailUrl?: string | null;
   /** Transcode progress 0-100. */
   progress?: number;
+  /** Current transcode stage (download, 360p, 720p, 1080p, package, ...). */
+  stage?: string | null;
 };

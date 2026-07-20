@@ -22,7 +22,14 @@ from app.metrics import (
     start_metrics_server,
 )
 from app import catalog
-from app.transcoder import extract_thumbnail, probe_duration, transcode_to_cmaf
+from app.profiles import PROFILES
+from app.transcoder import (
+    encode_rendition,
+    extract_thumbnail,
+    has_audio_stream,
+    package_cmaf,
+    probe_duration,
+)
 
 
 logger = structlog.get_logger("transcode-worker")
@@ -38,6 +45,21 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def _rendition_ranges(n: int) -> list[tuple[int, int]]:
+    """Overall-% window for each rendition (renditions occupy 5-85%; later,
+    larger renditions get a bigger slice)."""
+    lo, hi = 5, 85
+    weights = [i + 1 for i in range(n)]
+    total = sum(weights) or 1
+    ranges: list[tuple[int, int]] = []
+    cur = float(lo)
+    for w in weights:
+        nxt = cur + (hi - lo) * w / total
+        ranges.append((int(cur), int(nxt)))
+        cur = nxt
+    return ranges
 
 
 def _sqs() -> BaseClient:
@@ -136,24 +158,49 @@ def process_message(message: Dict[str, Any]) -> None:
     try:
         _download_input(settings.s3_video_bucket, s3_key, input_path)
 
-        # Throttle catalog progress writes to ~once every 2s / on change.
-        progress_state = {"t": 0.0, "pct": -1}
-
-        def _on_progress(pct: int) -> None:
-            now = time.monotonic()
-            if pct != progress_state["pct"] and (now - progress_state["t"] >= 2 or pct >= 99):
-                progress_state["pct"] = pct
-                progress_state["t"] = now
-                catalog.update_progress(job_id, pct)
+        renditions_dir = tmpdir / "renditions"
+        renditions_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         seconds = probe_duration(input_path) or 0.0
-        manifests = transcode_to_cmaf(input_path, output_dir, on_progress=_on_progress)
+        audio = has_audio_stream(input_path)
 
-        # Poster thumbnail from the source (~10% in, capped), uploaded with the rest.
+        # Throttled catalog writer: overall progress % + current stage label.
+        pstate: Dict[str, Any] = {"t": 0.0, "pct": -1, "stage": None}
+
+        def _emit(pct: int, stage: str) -> None:
+            now = time.monotonic()
+            changed = pct != pstate["pct"] or stage != pstate["stage"]
+            if changed and (now - pstate["t"] >= 1.5 or pct >= 99 or stage != pstate["stage"]):
+                pstate["pct"], pstate["stage"], pstate["t"] = pct, stage, now
+                catalog.update_progress(job_id, pct, stage=stage)
+
+        _emit(4, "download")
+
+        # Encode each rendition one-by-one; each reports its own stage + progress.
+        ranges = _rendition_ranges(len(PROFILES))
+        rendition_paths = []
+        for i, profile in enumerate(PROFILES):
+            lo, hi = ranges[i]
+            out = renditions_dir / f"rendition_{profile.name}.mp4"
+            _emit(lo, profile.name)
+
+            def _cb(p: int, lo=lo, hi=hi, name=profile.name) -> None:
+                _emit(int(lo + (hi - lo) * p / 100), name)
+
+            encode_rendition(input_path, out, profile, audio and i == 0, seconds, on_progress=_cb)
+            rendition_paths.append(out)
+
+        # Package the renditions into one CMAF set (HLS + DASH), stream-copy.
+        _emit(87, "package")
+        manifests = package_cmaf(rendition_paths, output_dir, audio)
+
+        _emit(91, "thumbnail")
         thumb_path = output_dir / "thumbnail.jpg"
         thumb_at = max(1.0, min(seconds * 0.1, 60.0)) if seconds else 3.0
         extract_thumbnail(input_path, thumb_path, thumb_at)
 
+        _emit(94, "upload")
         uploaded = _upload_directory(settings.s3_segments_bucket, job_id, output_dir)
         SEGMENTS_UPLOADED.inc(uploaded)
 
@@ -169,12 +216,7 @@ def process_message(message: Dict[str, Any]) -> None:
             duration=duration,
             thumbnail_url=thumbnail_url,
         )
-        logger.info(
-            "manifests_generated",
-            job_id=job_id,
-            hls=manifest_url,
-            dash=dash_url,
-        )
+        logger.info("manifests_generated", job_id=job_id, hls=manifest_url, dash=dash_url)
     except Exception as exc:  # noqa: BLE001
         TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()
         logger.exception("job_failed", job_id=job_id, error=str(exc))

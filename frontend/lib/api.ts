@@ -8,8 +8,46 @@ export const API_URL =
 export const ORIGIN_URL =
   process.env.NEXT_PUBLIC_ORIGIN_URL ?? "http://localhost:8080";
 
+export const BEACON_URL =
+  process.env.NEXT_PUBLIC_BEACON_URL ?? "http://localhost:8001";
+
 // Keep in sync with upload-api MAX_UPLOAD_SIZE_MB.
 export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 5000);
+
+export type BeaconEvent = {
+  event: "startup" | "rebuffer" | "bitrate_switch" | "error" | "heartbeat";
+  timestamp: string;
+  startup_ms?: number;
+  rebuffer_ms?: number;
+  current_bitrate_kbps?: number;
+  error_type?: string;
+};
+
+/** Fire-and-forget QoE telemetry to the beacon-collector. */
+export function sendBeacon(batch: {
+  session_id: string;
+  content_id?: string;
+  player_version?: string;
+  events: BeaconEvent[];
+}): void {
+  if (!batch.events.length) return;
+  const body = JSON.stringify(batch);
+  try {
+    // sendBeacon survives page unload; fall back to fetch(keepalive).
+    if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+      navigator.sendBeacon(`${BEACON_URL}/api/v1/beacon/`, new Blob([body], { type: "application/json" }));
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  void fetch(`${BEACON_URL}/api/v1/beacon/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    keepalive: true,
+  }).catch(() => {});
+}
 
 // ---- Backend wire shapes (snake_case) ----
 
@@ -27,6 +65,7 @@ type ApiMovie = {
   thumbnail_url?: string | null;
   status?: "processing" | "ready" | null;
   progress?: number | null;
+  stage?: string | null;
   created_at?: string;
 };
 
@@ -36,6 +75,7 @@ export type JobStatus = {
   status: "queued" | "processing" | "complete";
   stream_url: string | null;
   progress: number;
+  stage: string | null;
 };
 
 export type MovieCreatePayload = {
@@ -86,6 +126,7 @@ export function mapMovie(m: ApiMovie): Movie {
     dashUrl: m.dash_url ?? null,
     thumbnailUrl: m.thumbnail_url ?? null,
     progress: m.progress ?? 0,
+    stage: m.stage ?? null,
   };
 }
 
