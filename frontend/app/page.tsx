@@ -40,7 +40,9 @@ export default function HomePage() {
 
   const playMovie = (movie: Movie) => {
     if (!movie.manifestUrl) return;
-    window.location.href = `/player?url=${encodeURIComponent(movie.manifestUrl)}`;
+    const q = new URLSearchParams({ url: movie.manifestUrl, title: movie.title, id: movie.id });
+    if (movie.thumbnailUrl) q.set("poster", movie.thumbnailUrl);
+    window.location.href = `/player?${q.toString()}`;
   };
 
   const grouped = useMemo(() => {
