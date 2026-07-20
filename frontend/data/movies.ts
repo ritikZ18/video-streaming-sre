@@ -1,8 +1,9 @@
 import type { Movie } from "../lib/types";
 
-// Seed/demo catalog. Shown as a fallback when the catalog API is empty or
-// unreachable (e.g. before floci + the pipeline have produced anything). Real
-// uploads come from the Upload API and are merged in ahead of these.
+// Seed/demo catalog. Shown as a fallback / filler alongside real uploads.
+// These point at well-known public, CORS-enabled HLS test streams so the demo
+// cards actually play. Real uploads come from the Upload API and are merged in
+// ahead of these.
 export const initialMovies: Movie[] = [
   {
     id: "seed-aurora",
@@ -16,7 +17,7 @@ export const initialMovies: Movie[] = [
     tag: "Trending",
     gradient: "linear-gradient(135deg,#312e81,#06b6d4)",
     status: "ready",
-    manifestUrl: null,
+    manifestUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
   },
   {
     id: "seed-redline",
@@ -30,7 +31,7 @@ export const initialMovies: Movie[] = [
     tag: "New Release",
     gradient: "linear-gradient(135deg,#be123c,#f59e0b)",
     status: "ready",
-    manifestUrl: null,
+    manifestUrl: "https://test-streams.mux.dev/pts_shift/master.m3u8",
   },
   {
     id: "seed-quietwater",
@@ -44,7 +45,7 @@ export const initialMovies: Movie[] = [
     tag: "Award Winner",
     gradient: "linear-gradient(135deg,#065f46,#22d3ee)",
     status: "ready",
-    manifestUrl: null,
+    manifestUrl: "https://test-streams.mux.dev/tos_ismc/main.m3u8",
   },
   {
     id: "seed-lastlaugh",
@@ -58,7 +59,8 @@ export const initialMovies: Movie[] = [
     tag: "Popular",
     gradient: "linear-gradient(135deg,#4c1d95,#ec4899)",
     status: "ready",
-    manifestUrl: null,
+    manifestUrl:
+      "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8",
   },
   {
     id: "seed-deepfield",
@@ -72,7 +74,7 @@ export const initialMovies: Movie[] = [
     tag: "Editor's Pick",
     gradient: "linear-gradient(135deg,#0f766e,#84cc16)",
     status: "ready",
-    manifestUrl: null,
+    manifestUrl: "https://test-streams.mux.dev/bbb/playlist.m3u8",
   },
   {
     id: "seed-nightmarket",
@@ -86,6 +88,6 @@ export const initialMovies: Movie[] = [
     tag: null,
     gradient: "linear-gradient(135deg,#9d174d,#6366f1)",
     status: "ready",
-    manifestUrl: null,
+    manifestUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
   },
 ];

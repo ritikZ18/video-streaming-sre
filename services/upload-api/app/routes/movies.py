@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
+from app.auth import require_admin
 from app.models.schemas import Movie, MovieCreate, MovieList
 from app.services import catalog
 
@@ -22,7 +23,7 @@ def list_movies() -> MovieList:
     status_code=status.HTTP_201_CREATED,
     response_model=Movie,
 )
-def create_movie(payload: MovieCreate) -> Movie:
+def create_movie(payload: MovieCreate, _admin: str = Depends(require_admin)) -> Movie:
     movie = Movie(
         id=str(uuid4()),
         created_at=datetime.now(tz=timezone.utc),

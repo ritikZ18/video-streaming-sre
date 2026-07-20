@@ -76,7 +76,7 @@ export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
                 title={movie.manifestUrl ? "Play" : "Still processing"}
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <span>{movie.manifestUrl ? "Play" : "Processing…"}</span>
+                <span>{movie.status === "processing" ? "Processing…" : "Play"}</span>
               </button>
               <button
                 type="button"

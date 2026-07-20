@@ -15,10 +15,32 @@ HLS_MASTER = "master.m3u8"
 SEGMENT_DURATION = 6
 
 
+def has_audio_stream(input_path: Path) -> bool:
+    """Return True if the input has at least one audio stream (via ffprobe)."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(input_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
 def build_ffmpeg_command(
     input_path: Path,
     output_dir: Path,
     profiles: List[EncodingProfile] | None = None,
+    has_audio: bool = True,
 ) -> List[str]:
     """
     Build a single ffmpeg command that produces a CMAF (fMP4) ABR ladder and
@@ -59,10 +81,11 @@ def build_ffmpeg_command(
         filter_complex,
     ]
 
-    # 2) Map each scaled video branch, then the audio once.
+    # 2) Map each scaled video branch, then the audio once (if present).
     for i in range(len(profiles)):
         cmd += ["-map", f"[v{i}out]"]
-    cmd += ["-map", "0:a:0"]
+    if has_audio:
+        cmd += ["-map", "0:a:0"]
 
     # 3) Shared video/audio codec settings.
     cmd += [
@@ -91,17 +114,19 @@ def build_ffmpeg_command(
             profile.profile,
         ]
 
-    cmd += [
-        "-c:a",
-        "aac",
-        "-b:a",
-        profiles[-1].audio_bitrate,
-        "-ar",
-        "48000",
-    ]
+    if has_audio:
+        cmd += [
+            "-c:a",
+            "aac",
+            "-b:a",
+            profiles[-1].audio_bitrate,
+            "-ar",
+            "48000",
+        ]
 
     # 5) DASH muxer with CMAF segments; also emit HLS playlists from the same
-    #    segments. Video streams form adaptation set 0, audio set 1.
+    #    segments. Video streams form adaptation set 0, audio (if any) set 1.
+    adaptation_sets = "id=0,streams=v id=1,streams=a" if has_audio else "id=0,streams=v"
     cmd += [
         "-f",
         "dash",
@@ -112,7 +137,7 @@ def build_ffmpeg_command(
         "-use_timeline",
         "1",
         "-adaptation_sets",
-        "id=0,streams=v id=1,streams=a",
+        adaptation_sets,
         "-hls_playlist",
         "1",
         str(output_dir / DASH_MANIFEST),
@@ -129,7 +154,7 @@ def transcode_to_cmaf(input_path: Path, work_dir: Path) -> Dict[str, Path]:
     ``work_dir`` and are meant to be uploaded verbatim to object storage.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
-    cmd = build_ffmpeg_command(input_path, work_dir)
+    cmd = build_ffmpeg_command(input_path, work_dir, has_audio=has_audio_stream(input_path))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg transcode failed: {result.stderr}")

@@ -1,4 +1,5 @@
 import type { Movie, Tag } from "./types";
+import { authHeader, setAdminToken } from "./auth";
 
 // The browser talks to the host-exposed ports. Override at build time with
 // NEXT_PUBLIC_API_URL / NEXT_PUBLIC_ORIGIN_URL if you remap them.
@@ -104,10 +105,28 @@ export async function uploadVideo(
   }
   const res = await fetch(`${API_URL}/api/v1/upload`, {
     method: "POST",
+    headers: { ...authHeader() },
     body: form,
   });
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (!res.ok) throw new Error(`upload failed: ${res.status}`);
   return (await res.json()) as UploadResponse;
+}
+
+/** Verify admin credentials against upload-api and, on success, store them. */
+export async function adminLogin(
+  username: string,
+  password: string,
+): Promise<boolean> {
+  const token = btoa(`${username}:${password}`);
+  const res = await fetch(`${API_URL}/api/v1/admin/check`, {
+    headers: { Authorization: `Basic ${token}` },
+  });
+  if (res.ok) {
+    setAdminToken(username, password);
+    return true;
+  }
+  return false;
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
@@ -123,9 +142,10 @@ export async function createMovie(
 ): Promise<Movie> {
   const res = await fetch(`${API_URL}/api/v1/movies/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     body: JSON.stringify(payload),
   });
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (!res.ok) throw new Error(`createMovie failed: ${res.status}`);
   return mapMovie((await res.json()) as ApiMovie);
 }

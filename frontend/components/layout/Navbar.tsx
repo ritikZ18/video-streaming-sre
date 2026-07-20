@@ -1,11 +1,11 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Plus, Play } from "lucide-react";
+import { Lock, Play } from "lucide-react";
 import { SearchBar } from "../common/SearchBar";
 
 type NavbarProps = {
-  onAddMovieClick: () => void;
+  onAddMovieClick?: () => void;
 };
 
 const NAV_ITEMS = [
@@ -56,11 +56,11 @@ export function Navbar({ onAddMovieClick }: NavbarProps) {
         <SearchBar />
         <button
           type="button"
-          onClick={onAddMovieClick}
+          onClick={() => router.push("/admin")}
           className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-glow-soft transition-colors hover:bg-white/20"
         >
-          <Plus className="h-4 w-4" />
-          Add Movie
+          <Lock className="h-4 w-4" />
+          Admin
         </button>
       </div>
     </nav>

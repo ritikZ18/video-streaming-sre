@@ -27,6 +27,9 @@ services:
     environment:
       <<: *floci-aws
       SQS_TRANSCODE_QUEUE_URL: ${SQS_TRANSCODE_QUEUE_URL:-http://host.docker.internal:4566/000000000000/streamsre-transcode-queue}
+      # Admin credentials gating the write endpoints (upload + create movie).
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

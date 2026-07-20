@@ -17,17 +17,22 @@ export default function BrowsePage() {
 
   useEffect(() => {
     let active = true;
-    listMovies()
-      .then((real) => {
-        if (!active) return;
-        const realIds = new Set(real.map((m) => m.id));
-        setMovies([...real, ...initialMovies.filter((s) => !realIds.has(s.id))]);
-      })
-      .catch(() => {
-        /* Catalog API unreachable — keep the seed catalog. */
-      });
+    const load = () => {
+      listMovies()
+        .then((real) => {
+          if (!active) return;
+          const realIds = new Set(real.map((m) => m.id));
+          setMovies([...real, ...initialMovies.filter((s) => !realIds.has(s.id))]);
+        })
+        .catch(() => {
+          /* Catalog API unreachable — keep the seed catalog. */
+        });
+    };
+    load();
+    const timer = setInterval(load, 5000);
     return () => {
       active = false;
+      clearInterval(timer);
     };
   }, []);
 

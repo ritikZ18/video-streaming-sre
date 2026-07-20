@@ -13,9 +13,18 @@ Interactive docs: `http://localhost:8000/docs` and `http://localhost:8001/docs`.
 The Upload API owns both ingestion **and** the movie catalog (backed by
 DynamoDB). There is no separate catalog service.
 
-### 1.1 `POST /api/v1/upload`
+### Authentication
 
-Ingest a video and register a catalog entry.
+Read endpoints (`GET /movies`, `GET /jobs/{id}`, health) are **public**. The
+**write** endpoints — `POST /upload` and `POST /movies` — require **HTTP Basic
+auth** with the admin credentials (`ADMIN_USERNAME` / `ADMIN_PASSWORD`, default
+`admin`/`admin`). Missing or wrong credentials return `401`. The web UI collects
+these on the `/admin` login screen and sends them as an `Authorization: Basic …`
+header with each write.
+
+### 1.1 `POST /api/v1/upload` 🔒 admin
+
+Ingest a video and register a catalog entry. Requires admin Basic auth.
 
 - **Content-Type**: `multipart/form-data`
 - **Fields**:
@@ -73,9 +82,11 @@ List the catalog (used by the home + browse pages).
   }
   ```
 
-### 1.4 `POST /api/v1/movies/`
+### 1.4 `POST /api/v1/movies/` 🔒 admin
 
 Register a movie directly (admin flow — e.g. HLS assets that already exist).
+Requires admin Basic auth. The UI's "Add Movie" form derives `manifest_url` from
+an HLS folder id (`<origin>/hls/<id>/master.m3u8`) so the entry is playable.
 
 - **Request** (`application/json`):
   ```json
@@ -93,7 +104,12 @@ Register a movie directly (admin flow — e.g. HLS assets that already exist).
 - **`201 Created`** → the created `Movie` (with `id`, `created_at`,
   `status: "ready"`).
 
-### 1.5 Health & metrics
+### 1.5 `GET /api/v1/admin/check` 🔒 admin
+
+Validate admin credentials (used by the `/admin` login screen). `200` +
+`{ "status": "ok", "user": "…" }` when the Basic auth is valid, else `401`.
+
+### 1.6 Health & metrics
 
 - `GET /health` → `{ "status": "ok" }`
 - `GET /ready` → `{ "status": "ready" }` (or `"degraded"` if storage is unreachable)
@@ -168,8 +184,10 @@ CORS (`Access-Control-Allow-Origin: *`) and per-content-type cache TTLs
 
 ## 4. How the UI maps onto these APIs
 
-- **Home / Browse**: `GET /api/v1/movies/` → hero + genre rows.
-- **Upload page**: `POST /api/v1/upload` (file + metadata), then poll
-  `GET /api/v1/jobs/{job_id}` until `complete`.
+- **Home / Browse** (public): `GET /api/v1/movies/` → hero + genre rows; polled
+  every 5s so `processing → ready` appears without a reload.
+- **`/admin`** (login-gated): `GET /api/v1/admin/check` to sign in, then
+  `POST /api/v1/upload` (file + metadata) and poll `GET /api/v1/jobs/{job_id}`
+  until `complete`. All writes carry the admin `Authorization` header.
 - **Play**: navigate to `/player?url=<manifest_url>`; hls.js loads it from the
   **origin**; the player POSTs QoE events to `POST /api/v1/beacon/`.

@@ -68,8 +68,8 @@ flowchart TD
 
 | Component | Tech | Port(s) | Responsibility |
 |---|---|---|---|
-| **Web player** (`frontend/`) | Next.js 14, React, hls.js, Tailwind | 3001 | Apple-TV–style catalog UI; uploads; HLS playback; QoE beacons |
-| **Upload API** (`services/upload-api`) | Python 3.12, FastAPI | 8000 | Validate + store uploads (S3), enqueue transcode (SQS), own the catalog (DynamoDB), job status |
+| **Web player** (`frontend/`) | Next.js 14, React, hls.js, Tailwind | 3001 | Public Apple-TV–style catalog UI + HLS playback + QoE beacons; login-gated `/admin` for uploads |
+| **Upload API** (`services/upload-api`) | Python 3.12, FastAPI | 8000 | Validate + store uploads (S3), enqueue transcode (SQS), own the catalog (DynamoDB), job status; **admin auth on write endpoints** |
 | **Transcode Worker** (`services/transcode-worker`) | Python + FFmpeg | 9100 (metrics) | Consume SQS, one FFmpeg pass → CMAF + HLS + DASH, upload to segments bucket, mark catalog ready |
 | **Origin** (`services/origin`) | Nginx | 8080, 9113 (metrics) | Proxy + cache manifests/segments from the S3 segments bucket; CDN-edge stand-in |
 | **Beacon Collector** (`services/beacon-collector`) | Python 3.12, FastAPI | 8001 | Ingest player QoE events → Prometheus metrics |
@@ -93,7 +93,8 @@ flowchart TD
 
 ### 3.1 Upload → transcode → ready
 
-1. UI `POST /api/v1/upload` (multipart: file + optional title/genre/year/…).
+1. Admin UI (`/admin`, login-gated) `POST /api/v1/upload` with the admin Basic
+   auth header (multipart: file + optional title/genre/year/…).
 2. **upload-api**: validates → puts raw file to `raw-uploads` → writes a
    DynamoDB catalog row with `status=processing` (the **movie id is the job id**)
    → enqueues an SQS message `{job_id, s3_key}`.
@@ -106,7 +107,8 @@ flowchart TD
 
 ### 3.2 Playback
 
-1. UI `GET /api/v1/movies/` renders the hero + genre rows.
+1. UI `GET /api/v1/movies/` renders the hero + genre rows (polled every 5s so
+   newly-ready uploads appear without a reload).
 2. Click **Play** → navigate to `/player?url=<manifest_url>`.
 3. hls.js requests `master.m3u8` → media playlists → `.m4s` segments, all via
    the **origin** (`:8080/hls/...`), which proxies and caches the S3 segments

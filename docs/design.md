@@ -60,8 +60,10 @@ SLOs, runbooks, chaos). Everything runs locally at zero cost: AWS is emulated by
 See [architecture.md](architecture.md) for the diagram and the full table.
 In one line each:
 
-- **frontend** — Next.js Apple-TV UI (hls.js), upload + browse + player.
-- **upload-api** — FastAPI: ingest, catalog (DynamoDB), job status.
+- **frontend** — Next.js Apple-TV UI (hls.js): public browse + player, plus a
+  login-gated `/admin` area for upload and add-movie.
+- **upload-api** — FastAPI: ingest, catalog (DynamoDB), job status; write
+  endpoints gated by admin auth.
 - **transcode-worker** — SQS consumer; FFmpeg → CMAF + HLS + DASH → S3.
 - **origin** — Nginx proxy/cache in front of the S3 segments bucket.
 - **beacon-collector** — FastAPI: QoE events → Prometheus.
@@ -164,8 +166,11 @@ sequenceDiagram
   `-hls_playlist 1` additionally writes `master.m3u8` + media playlists that
   reference the **same** `.m4s` segments. This is the whole reason DASH is
   "free" here.
+- **Optional audio**: the worker probes the source with `ffprobe`; a video with
+  no audio track is packaged video-only rather than failing the job.
 - **Playback**: hls.js (or native HLS on Safari/iOS) for `.m3u8`; any DASH
-  player can consume `manifest.mpd`. The player picks renditions adaptively.
+  player can consume `manifest.mpd`. The player picks renditions adaptively. The
+  home/browse grid polls the catalog so a finished transcode appears live.
 
 ---
 
@@ -202,6 +207,12 @@ Full detail and the real-AWS mapping: [infra-floci.md](infra-floci.md).
 
 ## 9. Security
 
+- **Admin auth**: the public site (browse + watch on `:3001`) needs no login.
+  The **write** endpoints — `POST /upload` and `POST /movies` — require HTTP
+  Basic credentials (`ADMIN_USERNAME` / `ADMIN_PASSWORD`, constant-time compare).
+  The `/admin` UI collects them at a login screen and sends an
+  `Authorization: Basic …` header with each write; enforcement is server-side,
+  so hitting `/admin` directly still can't upload without valid credentials.
 - **Upload validation**: extension allow-list, magic-byte sniffing, size cap
   (500 MB), request-body size middleware, simple rate limiting.
 - **Origin headers**: CORS, HSTS, `X-Frame-Options`, `X-Content-Type-Options`.
@@ -221,7 +232,7 @@ Full detail and the real-AWS mapping: [infra-floci.md](infra-floci.md).
 |---|---|---|
 | **DynamoDB** for the catalog | AWS-native NoSQL, Dynamo/Cassandra lineage, floci-supported, Terraform-provisioned | No rich SQL joins; listing uses scan (fine at this scale) |
 | **floci** over LocalStack | User's own emulator; same `:4566` + wire protocol | External stack to start; API-compatible with LocalStack |
-| **CMAF once → HLS + DASH** | One encode serves both protocols | Assumes an audio stream; single-audio ladder |
+| **CMAF once → HLS + DASH** | One encode serves both protocols | Single-audio ladder (audio optional, detected via ffprobe) |
 | **fMP4 (`.m4s`)** not MPEG-TS | CMAF enables the dual-manifest trick; modern | (Also why `*.ts` was removed from `.gitignore` — it collided with TypeScript) |
 | **Job status from S3** | Stateless, no extra store | Binary (processing/complete); no fine-grained progress |
 | **Nginx origin** stands in for CDN | Shows caching/edge behavior locally | Not a real global CDN; documented as CloudFront in prod |

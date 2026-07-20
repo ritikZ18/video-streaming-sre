@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 
+from app.auth import require_admin
 from app.config import get_settings
 from app.models.schemas import Movie, UploadResponse
 from app.services import catalog, queue, s3
@@ -28,6 +29,7 @@ async def upload_video(
     duration: str | None = Form(default=None),
     tag: str | None = Form(default=None),
     description: str | None = Form(default=None),
+    _admin: str = Depends(require_admin),
 ) -> UploadResponse:
     """Validate and upload a video, enqueue transcoding, and register a
     catalog entry (status=processing) that the worker flips to ready."""

@@ -47,28 +47,30 @@ The detail view is the natural place to expose **technical metadata** in future 
 
 These beacons feed into **Prometheus metrics** via the Beacon Collector, powering QoE dashboards and SLOs.
 
-### 4. Add Movies to the Catalog
+### 4. Add Movies to the Catalog (admin only)
 
-You want a simple way to seed and manage content for demos. There are two main paths:
+Adding content lives behind the **`/admin` login** (default `admin`/`admin`).
+The public site is browse + watch only. There are two paths, both admin-gated:
 
-1. **Upload Flow** (mimics a real ingestion pipeline):
-   - Use the Upload API (or UI) to send a raw video file plus metadata.
+1. **Upload Flow** (the real ingestion pipeline):
+   - On `/admin`, upload a raw video file plus metadata.
    - The system:
-     - Stores raw file in a “raw uploads” bucket.
-     - Sends a message to the transcode queue.
-     - After transcoding, writes an HLS master manifest and segments into a “segments” bucket.
-     - Creates/updates a **catalog record** in the database with:
-       - Movie ID, title, description, genre, rating, year, tags.
-       - Paths/URLs to HLS manifests and artwork.
+     - Stores the raw file in the “raw uploads” bucket.
+     - Registers a catalog record (`status = processing`) and sends a message to
+       the transcode queue.
+     - After transcoding, writes HLS + DASH manifests and CMAF segments into the
+       “segments” bucket and flips the record to `status = ready` with its
+       manifest URLs (movie ID, title, genre, rating, year, tag, etc.).
 
-2. **Admin Catalog API** (fast for testing):
-   - Call a `POST /catalog/movies` endpoint with metadata and an existing `manifest_url`.
-   - This is useful when you already have HLS content hosted somewhere (e.g. sample assets).
+2. **Register existing HLS** (fast for testing):
+   - The `/admin` "Add Movie" form calls `POST /api/v1/movies/` with metadata and
+     an HLS folder id; the API stores a playable `manifest_url`
+     (`<origin>/hls/<id>/master.m3u8`). Useful when the HLS assets already exist.
 
-The **UI example** you provided (Apple TV–style React app) will use the catalog API for:
+The Apple TV–style UI uses the catalog API for:
 
-- `GET /catalog/movies` – list for carousels and search.
-- `POST /catalog/movies` – add a new movie from the “Add Movie” panel.
+- `GET /api/v1/movies/` – list for carousels and search (public, auto-refreshed).
+- `POST /api/v1/movies/` – add a movie from the admin “Add Movie” panel (auth).
 
 ---
 

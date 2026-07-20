@@ -99,13 +99,19 @@ bash scripts/seed-test-video.sh   # 5. push a test clip through the pipeline
 
 `make bootstrap` does steps 1–2; `make demo` does 1–5. Then:
 
-- **Upload** via the Upload API (`http://localhost:8000/docs`) or the player UI.
+- **Browse & watch** on the public site (`http://localhost:3001`).
+- **Upload** at `http://localhost:3001/admin` — log in (default `admin`/`admin`,
+  set via `ADMIN_USERNAME` / `ADMIN_PASSWORD`). The video transcodes to HLS+DASH
+  and appears on the home grid within a few seconds (the grid auto-refreshes).
 - **Play** the result at `http://localhost:8080/hls/<job>/master.m3u8` (HLS) or
   `.../manifest.mpd` (DASH).
 - **Watch metrics & alerts** in Grafana (`http://localhost:3000`): origin
   latency/errors, transcode queue depth/failures, QoE (startup, rebuffering).
 - **Run chaos** (`chaos/`): kill origin / inject latency, observe SLO burn‑rate
   alerts.
+
+If an upload stays **"Processing"**, run `bash scripts/diagnose.sh` — it dumps
+the worker logs plus the live S3 / SQS / DynamoDB state to show why.
 
 ---
 

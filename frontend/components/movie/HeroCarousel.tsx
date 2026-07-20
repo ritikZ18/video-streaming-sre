@@ -74,7 +74,7 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
               className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-2.5 text-sm font-bold text-black shadow-glow-soft transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Play className="h-4 w-4 fill-black text-black" />
-              {current.manifestUrl ? "Play" : "Processing…"}
+              {current.status === "processing" ? "Processing…" : "Play"}
             </button>
             <button
               type="button"
