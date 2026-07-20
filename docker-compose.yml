@@ -1,18 +1,22 @@
-version: "3.9"
+# AWS services (S3 + SQS) are provided by the *floci* local AWS emulator, which
+# runs as its own stack (see ~/floci-stack: `./floci.sh up`). It listens on the
+# host at http://localhost:4566. Containers in this compose reach it via
+# host.docker.internal:4566 (the `extra_hosts: host-gateway` entries below make
+# that resolvable on both Docker Desktop and native Docker Engine).
+#
+# Provision the buckets/queues first with Terraform:  make tf-apply
+# Env contract mirrors floci's `./floci.sh env` (AWS_* = test / us-east-1).
+
+x-floci-aws: &floci-aws
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://host.docker.internal:4566}
+  SQS_ENDPOINT_URL: ${SQS_ENDPOINT_URL:-http://host.docker.internal:4566}
+  DYNAMODB_ENDPOINT_URL: ${DYNAMODB_ENDPOINT_URL:-http://host.docker.internal:4566}
+  DYNAMODB_TABLE: ${DYNAMODB_TABLE:-streamsre-catalog}
 
 services:
-  # --- Local AWS emulation ---
-  localstack:
-    image: localstack/localstack:3.0
-    container_name: streamsre-localstack
-    environment:
-      - SERVICES=s3,sqs
-      - DEFAULT_REGION=${AWS_REGION:-us-west-2}
-    ports:
-      - "4566:4566"
-    volumes:
-      - localstack_data:/var/lib/localstack
-
   # --- Upload API ---
   upload-api:
     build:
@@ -21,12 +25,12 @@ services:
     container_name: streamsre-upload-api
     env_file: .env
     environment:
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://localstack:4566}
-      - SQS_ENDPOINT_URL=${SQS_ENDPOINT_URL:-http://localstack:4566}
+      <<: *floci-aws
+      SQS_TRANSCODE_QUEUE_URL: ${SQS_TRANSCODE_QUEUE_URL:-http://host.docker.internal:4566/000000000000/streamsre-transcode-queue}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
-    depends_on:
-      - localstack
 
   # --- Transcode Worker ---
   transcode-worker:
@@ -36,10 +40,12 @@ services:
     container_name: streamsre-transcode-worker
     env_file: .env
     environment:
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://localstack:4566}
-      - SQS_ENDPOINT_URL=${SQS_ENDPOINT_URL:-http://localstack:4566}
-    depends_on:
-      - localstack
+      <<: *floci-aws
+      SQS_TRANSCODE_QUEUE_URL: ${SQS_TRANSCODE_QUEUE_URL:-http://host.docker.internal:4566/000000000000/streamsre-transcode-queue}
+      # Browser-facing origin URL baked into stored manifest URLs.
+      ORIGIN_BASE_URL: ${ORIGIN_BASE_URL:-http://localhost:8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # --- Origin (Nginx) ---
   origin:
@@ -48,10 +54,10 @@ services:
       dockerfile: Dockerfile
     container_name: streamsre-origin
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
-    depends_on:
-      - localstack
 
   # --- Beacon Collector ---
   beacon-collector:
@@ -133,7 +139,5 @@ services:
       - prometheus
 
 volumes:
-  localstack_data:
   prometheus_data:
   grafana_data:
-

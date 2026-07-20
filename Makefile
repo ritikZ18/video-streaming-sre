@@ -1,11 +1,29 @@
-.PHONY: help up down build logs logs-% test lint typecheck scan scan-secrets tf-plan tf-apply clean demo
+.PHONY: help floci-up floci-down floci-env bootstrap up down build logs logs-% \
+        test lint typecheck scan scan-secrets tf-init tf-plan tf-apply tf-destroy clean demo
+
+# Path to the floci control script (override if yours lives elsewhere):
+#   make floci-up FLOCI=/path/to/floci.sh
+FLOCI ?= $(HOME)/floci-stack/floci.sh
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
+# --- floci (local AWS emulator) ---
+floci-up: ## Start the floci local AWS stack
+	$(FLOCI) up
+
+floci-down: ## Stop the floci local AWS stack (keeps data)
+	$(FLOCI) stop
+
+floci-env: ## Print floci AWS_* export lines
+	$(FLOCI) env
+
 # --- Local Dev ---
-up: ## Start all services with Docker Compose
+bootstrap: floci-up tf-apply ## Start floci and provision S3 buckets + SQS queues with Terraform
+	@echo "Infra ready in floci. Now run 'make up'."
+
+up: ## Start all services with Docker Compose (floci must be running)
 	docker compose up -d --build
 	@echo "Frontend:        http://localhost:3001"
 	@echo "Upload API:      http://localhost:8000/docs"
@@ -50,12 +68,18 @@ scan: ## Run Trivy scan on all service images
 scan-secrets: ## Run gitleaks to detect secrets
 	bash security/scan-secrets.sh
 
-# --- Terraform (optional, when infra is wired) ---
-tf-plan: ## Terraform plan for staging
-	cd infra/terraform && terraform plan -var-file=environments/staging.tfvars
+# --- Terraform (provisions buckets/queues into floci) ---
+tf-init: ## Initialize Terraform
+	cd infra/terraform && terraform init
 
-tf-apply: ## Terraform apply for staging
-	cd infra/terraform && terraform apply -var-file=environments/staging.tfvars
+tf-plan: ## Show the Terraform plan
+	cd infra/terraform && terraform plan
+
+tf-apply: ## Apply Terraform (create S3 buckets + SQS queues in floci)
+	cd infra/terraform && terraform init -input=false && terraform apply -auto-approve
+
+tf-destroy: ## Destroy Terraform-managed resources
+	cd infra/terraform && terraform destroy -auto-approve
 
 # --- Housekeeping ---
 clean: ## Remove containers, images, volumes, and Python caches
@@ -63,8 +87,7 @@ clean: ## Remove containers, images, volumes, and Python caches
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 
-demo: up ## Start stack and seed a demo video
+demo: bootstrap up ## Full local demo: floci + infra + services + a seeded test video
 	@sleep 10
 	@bash scripts/seed-test-video.sh
 	@echo "Demo ready. Open http://localhost:3001"
-
