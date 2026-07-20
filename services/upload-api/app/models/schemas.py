@@ -1,7 +1,19 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class AudioTrack(BaseModel):
+    language: str
+    label: str
+
+
+class SubtitleTrack(BaseModel):
+    language: str
+    label: str
+    url: str
+    forced: bool = False
 
 
 class UploadResponse(BaseModel):
@@ -41,6 +53,9 @@ class Movie(MovieBase):
     thumbnail_url: str | None = None
     progress: int = 0
     stage: str | None = None
+    audio_tracks: list[AudioTrack] = Field(default_factory=list)
+    subtitle_tracks: list[SubtitleTrack] = Field(default_factory=list)
+    media_info: dict[str, Any] | None = None
 
 
 class MovieList(BaseModel):

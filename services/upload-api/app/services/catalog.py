@@ -52,13 +52,19 @@ def _to_item(movie: Movie) -> dict[str, Any]:
     return {k: v for k, v in item.items() if v is not None}
 
 
+def _decimalize(obj: Any) -> Any:
+    """Recursively convert DynamoDB Decimals to int/float (incl. nested media_info)."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, list):
+        return [_decimalize(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _decimalize(v) for k, v in obj.items()}
+    return obj
+
+
 def _to_movie(item: dict[str, Any]) -> Movie:
-    data = dict(item)
-    # DynamoDB returns numbers as Decimal; coerce the int fields.
-    for key in ("year", "progress"):
-        if isinstance(data.get(key), Decimal):
-            data[key] = int(data[key])
-    return Movie(**data)
+    return Movie(**_decimalize(dict(item)))
 
 
 def save(movie: Movie) -> None:
