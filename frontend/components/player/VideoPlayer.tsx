@@ -67,6 +67,8 @@ export function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [canPlay, setCanPlay] = useState(false); // first segment buffered / ready
+  const [pendingPlay, setPendingPlay] = useState(false); // clicked, awaiting first frame
   const [error, setError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [menu, setMenu] = useState<Menu>(null);
@@ -119,6 +121,8 @@ export function VideoPlayer({
     setLevels([]);
     setAudioTracks([]);
     setCurrentLevel(-1);
+    setCanPlay(false);
+    setPendingPlay(false);
 
     let hls: Hls | null = null;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -170,18 +174,24 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
+    const onPause = () => {
+      setPlaying(false);
+      setPendingPlay(false);
+    };
     const onTime = () => {
       setCurrent(video.currentTime);
       if (video.buffered.length) setBuffered(video.buffered.end(video.buffered.length - 1));
     };
     const onMeta = () => setDuration(video.duration || 0);
+    const onCanPlay = () => setCanPlay(true);
     const onWaiting = () => {
       setLoading(true);
       if (gotFirstRef.current) rebufferStartRef.current = performance.now();
     };
     const onPlaying = () => {
       setLoading(false);
+      setCanPlay(true);
+      setPendingPlay(false);
       if (!gotFirstRef.current) {
         gotFirstRef.current = true;
         const ms = Math.round(performance.now() - loadStartRef.current);
@@ -202,6 +212,7 @@ export function VideoPlayer({
     video.addEventListener("pause", onPause);
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("loadedmetadata", onMeta);
+    video.addEventListener("canplay", onCanPlay);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("playing", onPlaying);
     video.addEventListener("volumechange", onVol);
@@ -210,6 +221,7 @@ export function VideoPlayer({
       video.removeEventListener("pause", onPause);
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("loadedmetadata", onMeta);
+      video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("volumechange", onVol);
@@ -236,8 +248,16 @@ export function VideoPlayer({
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) void v.play();
-    else v.pause();
+    if (v.paused) {
+      // Show the spinner from the click until the first frame renders.
+      setPendingPlay(true);
+      const p = v.play();
+      if (p && typeof p.then === "function") {
+        p.catch(() => setPendingPlay(false));
+      }
+    } else {
+      v.pause();
+    }
   }, []);
   const seek = useCallback((t: number) => {
     const v = videoRef.current;
@@ -362,14 +382,16 @@ export function VideoPlayer({
         ))}
       </video>
 
-      {loading && !error && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      {/* Spinner: initial buffering, mid-play rebuffer, or click->first-frame gap */}
+      {!error && (loading || pendingPlay || (!canPlay && !playing)) && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
           <Loader2 className="h-12 w-12 animate-spin text-white/80" />
         </div>
       )}
 
+      {/* Center Play button: only once ready and paused (never during load) */}
       <AnimatePresence>
-        {!playing && !loading && !error && (
+        {!error && !playing && !pendingPlay && canPlay && (
           <motion.button
             type="button"
             onClick={togglePlay}
