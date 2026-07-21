@@ -10,7 +10,9 @@ from typing import Any, Dict
 
 import boto3
 import structlog
+from boto3.s3.transfer import TransferConfig
 from botocore.client import BaseClient
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import get_settings
@@ -65,16 +67,34 @@ def _rendition_ranges(n: int) -> list[tuple[int, int]]:
     return ranges
 
 
+# Fail fast + cap retries so a slow/unhealthy floci can't pile up long-running,
+# retrying connections (that feedback loop is what let one bad job peg floci).
+_BOTO_CONFIG = Config(
+    connect_timeout=5,
+    read_timeout=60,
+    retries={"max_attempts": 2, "mode": "standard"},
+    max_pool_connections=4,
+)
+
+# Bounded parallelism for the source download — 10 concurrent part-downloads
+# (the boto default) against a local emulator is what tipped it over.
+_DOWNLOAD_CFG = TransferConfig(max_concurrency=2)
+
+# Drop a message after this many receives so a genuinely bad job (e.g. a source
+# that never becomes readable) can't retry forever.
+_MAX_RECEIVES = 4
+
+
 def _sqs() -> BaseClient:
     settings = get_settings()
     session = boto3.session.Session(region_name=settings.aws_region)
-    return session.client("sqs", endpoint_url=settings.sqs_endpoint_url)
+    return session.client("sqs", endpoint_url=settings.sqs_endpoint_url, config=_BOTO_CONFIG)
 
 
 def _s3() -> BaseClient:
     settings = get_settings()
     session = boto3.session.Session(region_name=settings.aws_region)
-    return session.client("s3", endpoint_url=settings.s3_endpoint_url)
+    return session.client("s3", endpoint_url=settings.s3_endpoint_url, config=_BOTO_CONFIG)
 
 
 def _poll_queue() -> Dict[str, Any] | None:
@@ -89,6 +109,7 @@ def _poll_queue() -> Dict[str, Any] | None:
         QueueUrl=settings.sqs_transcode_queue_url,
         MaxNumberOfMessages=1,
         WaitTimeSeconds=20,
+        AttributeNames=["ApproximateReceiveCount"],
     )
     messages = response.get("Messages", [])
     QUEUE_DEPTH.set(len(messages))
@@ -108,7 +129,7 @@ def _delete_message(receipt_handle: str) -> None:
 
 def _download_input(bucket: str, key: str, dest: Path) -> None:
     client = _s3()
-    client.download_file(bucket, key, str(dest))
+    client.download_file(bucket, key, str(dest), Config=_DOWNLOAD_CFG)
 
 
 # Streaming MIME types boto3 won't infer on its own.
@@ -185,6 +206,22 @@ def _cleanup_canceled(job_id: str, s3_key: str) -> None:
     except (BotoCoreError, ClientError):
         pass
     _delete_prefix(settings.s3_segments_bucket, job_id)
+
+
+def _drop_poison_message(message: Dict[str, Any], receipt_handle: str, receives: int) -> None:
+    """A job that keeps failing (e.g. an unreadable source) is dropped: log it,
+    remove its catalog row so it leaves the grid, and delete the SQS message so
+    it stops re-driving the queue."""
+    TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()
+    try:
+        body = json.loads(message["Body"])
+        job_id = body.get("job_id")
+    except (ValueError, KeyError):
+        job_id = None
+    logger.error("poison_message_dropped", job_id=job_id, receives=receives)
+    if job_id:
+        catalog.delete_row(job_id)
+    _delete_message(receipt_handle)
 
 
 def process_message(message: Dict[str, Any]) -> None:
@@ -347,6 +384,10 @@ def main() -> None:
             if not message:
                 continue
             receipt_handle = message["ReceiptHandle"]
+            receives = int(message.get("Attributes", {}).get("ApproximateReceiveCount", "1"))
+            if receives > _MAX_RECEIVES:
+                _drop_poison_message(message, receipt_handle, receives)
+                continue
             process_message(message)
             _delete_message(receipt_handle)
         except (BotoCoreError, ClientError) as exc:  # pragma: no cover - network
