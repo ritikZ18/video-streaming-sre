@@ -66,9 +66,7 @@ export function VideoPlayer({
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [canPlay, setCanPlay] = useState(false); // first segment buffered / ready
-  const [pendingPlay, setPendingPlay] = useState(false); // clicked, awaiting first frame
+  const [loading, setLoading] = useState(false); // buffering / stalled only -> spinner
   const [error, setError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [menu, setMenu] = useState<Menu>(null);
@@ -121,8 +119,7 @@ export function VideoPlayer({
     setLevels([]);
     setAudioTracks([]);
     setCurrentLevel(-1);
-    setCanPlay(false);
-    setPendingPlay(false);
+    setLoading(false);
 
     let hls: Hls | null = null;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -134,6 +131,15 @@ export function VideoPlayer({
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setLevels(hls!.levels.map((l, i) => ({ index: i, height: l.height })));
+      });
+      // Authoritative VOD duration straight from the media playlist (sum of
+      // EXTINF). The <video>.duration can lag or read Infinity mid-load, which
+      // left the seek bar dead at 0:00 — this fixes the scrubber + timer.
+      hls.on(Hls.Events.LEVEL_LOADED, (_e, data) => {
+        const d = data.details;
+        if (d && !d.live && Number.isFinite(d.totalduration) && d.totalduration > 0) {
+          setDuration(d.totalduration);
+        }
       });
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
         setAudioTracks(
@@ -174,24 +180,28 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     const onPlay = () => setPlaying(true);
-    const onPause = () => {
-      setPlaying(false);
-      setPendingPlay(false);
-    };
+    const onPause = () => setPlaying(false);
     const onTime = () => {
       setCurrent(video.currentTime);
       if (video.buffered.length) setBuffered(video.buffered.end(video.buffered.length - 1));
+      // Ground truth from the element itself: keep React's playing/loading in
+      // sync with reality even if the discrete play/playing events were missed
+      // (that is what left the ▶ overlay up while the video was actually playing).
+      setPlaying(!video.paused);
+      if (!video.paused && video.currentTime > 0) setLoading(false);
     };
-    const onMeta = () => setDuration(video.duration || 0);
-    const onCanPlay = () => setCanPlay(true);
+    // Only trust a finite duration (a live/unfinalized HLS reports Infinity).
+    const onMeta = () => {
+      if (Number.isFinite(video.duration)) setDuration(video.duration);
+    };
+    const onCanPlay = () => setLoading(false);
+    // 'waiting'/'stalled' are the ONLY things that raise the spinner.
     const onWaiting = () => {
       setLoading(true);
       if (gotFirstRef.current) rebufferStartRef.current = performance.now();
     };
     const onPlaying = () => {
       setLoading(false);
-      setCanPlay(true);
-      setPendingPlay(false);
       if (!gotFirstRef.current) {
         gotFirstRef.current = true;
         const ms = Math.round(performance.now() - loadStartRef.current);
@@ -212,6 +222,7 @@ export function VideoPlayer({
     video.addEventListener("pause", onPause);
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("loadedmetadata", onMeta);
+    video.addEventListener("durationchange", onMeta);
     video.addEventListener("canplay", onCanPlay);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("playing", onPlaying);
@@ -221,12 +232,28 @@ export function VideoPlayer({
       video.removeEventListener("pause", onPause);
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("loadedmetadata", onMeta);
+      video.removeEventListener("durationchange", onMeta);
       video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("volumechange", onVol);
     };
   }, [pushEvent]);
+
+  // Bulletproof state sync: poll the <video> element directly so the UI can
+  // NEVER desync from reality (the ▶ overlay staying up while playing was a
+  // missed-event desync). This is the source of truth for play/time/duration.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const id = setInterval(() => {
+      setPlaying(!v.paused && !v.ended);
+      setCurrent(v.currentTime);
+      if (Number.isFinite(v.duration) && v.duration > 0) setDuration(v.duration);
+      if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
+    }, 250);
+    return () => clearInterval(id);
+  }, [src]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -248,16 +275,8 @@ export function VideoPlayer({
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) {
-      // Show the spinner from the click until the first frame renders.
-      setPendingPlay(true);
-      const p = v.play();
-      if (p && typeof p.then === "function") {
-        p.catch(() => setPendingPlay(false));
-      }
-    } else {
-      v.pause();
-    }
+    if (v.paused) void v.play();
+    else v.pause();
   }, []);
   const seek = useCallback((t: number) => {
     const v = videoRef.current;
@@ -374,6 +393,7 @@ export function VideoPlayer({
         onClick={togglePlay}
         poster={poster ?? undefined}
         crossOrigin="anonymous"
+        preload="auto"
         className="h-full w-full bg-black"
         playsInline
       >
@@ -382,16 +402,16 @@ export function VideoPlayer({
         ))}
       </video>
 
-      {/* Spinner: initial buffering, mid-play rebuffer, or click->first-frame gap */}
-      {!error && (loading || pendingPlay || (!canPlay && !playing)) && (
+      {/* Spinner: ONLY while genuinely buffering / stalled. */}
+      {!error && loading && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
           <Loader2 className="h-12 w-12 animate-spin text-white/80" />
         </div>
       )}
 
-      {/* Center Play button: only once ready and paused (never during load) */}
+      {/* Center Play button whenever paused (hidden as soon as it's playing). */}
       <AnimatePresence>
-        {!error && !playing && !pendingPlay && canPlay && (
+        {!error && !playing && !loading && (
           <motion.button
             type="button"
             onClick={togglePlay}
