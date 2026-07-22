@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Movie, Genre, Rating, Tag } from "../../lib/types";
+import { parseMediaFilename } from "../../lib/mediaName";
 
 type UploadFormProps = {
   disabled: boolean;
@@ -39,6 +40,18 @@ export function UploadForm({ disabled, file, onSubmitted }: UploadFormProps) {
   const [description, setDescription] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
+  const [detected, setDetected] = useState<string | null>(null);
+
+  // Auto-fill title + year parsed from the release filename. Works for every
+  // container (incl. mkv, which the browser can't decode for duration).
+  useEffect(() => {
+    if (!file) return;
+    const p = parseMediaFilename(file.name);
+    if (p.title) setTitle(p.title);
+    if (p.year) setYear(String(p.year));
+    const bits = [p.quality, p.codec].filter(Boolean);
+    setDetected(bits.length ? `Detected: ${bits.join(" · ")}` : null);
+  }, [file]);
 
   // Auto-fill duration from the file's metadata. Best-effort: browsers can read
   // mp4/mov/webm (not mkv); the worker sets the authoritative duration via
@@ -97,6 +110,9 @@ export function UploadForm({ disabled, file, onSubmitted }: UploadFormProps) {
           placeholder="Movie title"
           className={sharedInput}
         />
+        {detected && (
+          <p className="mt-1 text-[10px] text-emerald-300/80">{detected} · auto-filled from filename</p>
+        )}
       </div>
       <div className="grid grid-cols-3 gap-3">
         <div>
