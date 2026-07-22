@@ -180,3 +180,4 @@ floci-data/
 #############################################
 trivy-results.json
 gitleaks-report.json
+frontend/tsconfig.tsbuildinfo
