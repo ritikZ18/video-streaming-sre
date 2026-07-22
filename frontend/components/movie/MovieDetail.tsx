@@ -25,7 +25,7 @@ export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 24 }}
           transition={{ duration: 0.25, ease: "easeOut" }}
-          className="relative flex w-[90%] max-w-xl flex-col overflow-hidden rounded-modal bg-zinc-900 shadow-2xl"
+          className="relative flex w-[90%] max-w-xl flex-col overflow-hidden rounded-modal border border-white/10 bg-zinc-900/70 shadow-2xl ring-1 ring-white/5 backdrop-blur-2xl backdrop-saturate-150"
           onClick={(event) => event.stopPropagation()}
         >
           <div

@@ -19,7 +19,7 @@ export function Navbar({ onAddMovieClick }: NavbarProps) {
   const router = useRouter();
 
   return (
-    <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between bg-gradient-to-b from-black/90 via-black/60 to-transparent px-8 py-4">
+    <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between border-b border-white/10 bg-black/40 px-8 py-4 backdrop-blur-xl backdrop-saturate-150 transition-colors">
       <div className="flex items-center gap-8">
         <button
           type="button"
