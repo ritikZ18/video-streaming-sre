@@ -28,8 +28,8 @@ from app.profiles import PROFILES
 from app.transcoder import (
     JobCancelled,
     encode_audio,
-    encode_rendition,
-    extract_subtitle_to_vtt,
+    encode_ladder,
+    extract_subtitles_batch,
     extract_thumbnail,
     package_cmaf,
     probe_duration,
@@ -76,9 +76,10 @@ _BOTO_CONFIG = Config(
     max_pool_connections=4,
 )
 
-# Bounded parallelism for the source download — 10 concurrent part-downloads
-# (the boto default) against a local emulator is what tipped it over.
-_DOWNLOAD_CFG = TransferConfig(max_concurrency=2)
+# Bounded parallelism for the source download — the boto default of 10 concurrent
+# part-downloads against a local emulator is what tipped floci over; 4 is a
+# balance between throughput and not overwhelming it.
+_DOWNLOAD_CFG = TransferConfig(max_concurrency=4)
 
 # Drop a message after this many receives so a genuinely bad job (e.g. a source
 # that never becomes readable) can't retry forever.
@@ -270,21 +271,23 @@ def process_message(message: Dict[str, Any]) -> None:
         _emit(4, "download")
         _ck()
 
-        # 1) Video renditions, one-by-one (video only; audio handled separately).
-        ranges = _rendition_ranges(len(PROFILES))
-        video_paths = []
-        for i, profile in enumerate(PROFILES):
-            lo, hi = ranges[i]
-            out = renditions_dir / f"v_{profile.name}.mp4"
-            _emit(lo, profile.name)
+        # 1) All video renditions in a SINGLE decode pass (GPU: decode once ->
+        # scale_cuda per rendition -> nvenc). The renditions encode together, so
+        # progress walks the 360p/720p/1080p checklist steps as one pass advances.
+        names = [p.name for p in PROFILES]
+        lo, hi = 5, 78
 
-            def _cb(p: int, lo=lo, hi=hi, name=profile.name) -> None:
-                _emit(int(lo + (hi - lo) * p / 100), name)
+        def _cb(p: int) -> None:
+            # p is 0-100 of the single pass; map onto the 5-78% overall band and
+            # pick the checklist step by which third of the pass we're in.
+            idx = min(len(names) - 1, p * len(names) // 100)
+            _emit(int(lo + (hi - lo) * p / 100), names[idx])
 
-            encode_rendition(input_path, out, profile, include_audio=False,
-                             total_seconds=seconds, on_progress=_cb,
-                             should_cancel=should_cancel)
-            video_paths.append(out)
+        _emit(lo, names[0])
+        video_paths = encode_ladder(
+            input_path, renditions_dir, seconds,
+            on_progress=_cb, should_cancel=should_cancel,
+        )
 
         # 2) Every audio track (per language) -> AAC.
         _ck()
@@ -300,22 +303,18 @@ def process_message(message: Dict[str, Any]) -> None:
         _emit(85, "package")
         manifests = package_cmaf(video_paths, audio_tracks, output_dir)
 
-        # 4) Text subtitles -> sidecar WebVTT (image subs are listed, not converted).
+        # 4) Text subtitles -> sidecar WebVTT, ALL in a single demux pass (image
+        # subs are listed, not converted). One pass instead of one-per-track.
+        _ck()
         _emit(89, "subtitles")
         subtitle_tracks = []
-        for s in media["subtitles"]:
-            if not s["text"]:
-                continue
-            subs_dir = output_dir / "subs"
-            subs_dir.mkdir(exist_ok=True)
-            vtt = subs_dir / f"{s['language']}_{s['index']}.vtt"
-            if extract_subtitle_to_vtt(input_path, vtt, s["stream_index"]):
-                subtitle_tracks.append({
-                    "language": s["language"],
-                    "label": s["label"],
-                    "url": f"{base}/subs/{vtt.name}",
-                    "forced": s["forced"],
-                })
+        for s, vtt in extract_subtitles_batch(input_path, media["subtitles"], output_dir / "subs"):
+            subtitle_tracks.append({
+                "language": s["language"],
+                "label": s["label"],
+                "url": f"{base}/subs/{vtt.name}",
+                "forced": s["forced"],
+            })
 
         _emit(92, "thumbnail")
         thumb_path = output_dir / "thumbnail.jpg"

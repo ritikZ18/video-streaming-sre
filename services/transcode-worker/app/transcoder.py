@@ -146,11 +146,44 @@ def encode_audio(input_path: Path, output_path: Path, stream_index: int) -> Path
 def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: int) -> bool:
     """Convert one text subtitle stream to a sidecar WebVTT file."""
     cmd = [
-        "ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path),
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(input_path),
         "-map", f"0:{stream_index}", "-c:s", "webvtt", str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+
+
+def extract_subtitles_batch(
+    input_path: Path,
+    specs: List[Dict[str, Any]],
+    subs_dir: Path,
+) -> List[tuple[Dict[str, Any], Path]]:
+    """Extract many text subtitle streams to WebVTT in ONE demux pass.
+
+    specs: subtitle dicts (from probe_media) with stream_index/language/index.
+    A source with a dozen subtitle tracks otherwise costs a dozen full demuxes
+    of a multi-hundred-MB file; here we demux once and write every VTT output.
+    Returns (spec, path) for each track that produced a non-empty file (checked
+    by existence so a single bad stream doesn't discard the rest)."""
+    text_specs = [s for s in specs if s.get("text")]
+    if not text_specs:
+        return []
+    subs_dir.mkdir(exist_ok=True)
+    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(input_path)]
+    planned: List[tuple[Dict[str, Any], Path]] = []
+    for s in text_specs:
+        vtt = subs_dir / f"{s['language']}_{s['index']}.vtt"
+        cmd += ["-map", f"0:{s['stream_index']}", "-c:s", "webvtt", str(vtt)]
+        planned.append((s, vtt))
+    subprocess.run(cmd, capture_output=True, text=True)
+    good = [(s, vtt) for s, vtt in planned if vtt.exists() and vtt.stat().st_size > 0]
+    if not good:
+        # Single-pass produced nothing (one bad stream can abort ffmpeg); fall
+        # back to per-track extraction so healthy tracks still come through.
+        for s, vtt in planned:
+            if extract_subtitle_to_vtt(input_path, vtt, s["stream_index"]):
+                good.append((s, vtt))
+    return good
 
 
 def _run_ffmpeg_progress(
@@ -278,6 +311,79 @@ def encode_rendition(
     )
     _run_ffmpeg_progress(cpu_cmd, total_seconds, on_progress, should_cancel)
     return output_path
+
+
+def build_ladder_command(
+    input_path: Path,
+    outputs: List[tuple[EncodingProfile, Path]],
+    use_nvenc: bool,
+) -> List[str]:
+    """Single-pass command: decode the source ONCE and emit every rendition.
+
+    GPU path (use_nvenc): NVDEC decode -> keep frames on the GPU
+    (-hwaccel_output_format cuda) -> split -> scale_cuda per rendition (resize +
+    10-bit->8-bit on the GPU) -> one h264_nvenc encoder per rendition. No CPU
+    scale, and the expensive decode happens once instead of once-per-rendition.
+
+    CPU fallback: decode once -> split -> libswscale scale per rendition -> libx264.
+    """
+    settings = get_settings()
+    n = len(outputs)
+    cmd: List[str] = ["ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error"]
+    if use_nvenc:
+        cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+    cmd += ["-i", str(input_path)]
+
+    split = f"[0:v]split={n}" + "".join(f"[s{i}]" for i in range(n))
+    chains: List[str] = []
+    for i, (prof, _) in enumerate(outputs):
+        if use_nvenc:
+            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format=yuv420p[v{i}]")
+        else:
+            chains.append(f"[s{i}]scale={prof.width}:{prof.height},format=yuv420p[v{i}]")
+    cmd += ["-filter_complex", ";".join([split] + chains)]
+
+    for i, (prof, outp) in enumerate(outputs):
+        cmd += ["-map", f"[v{i}]"]
+        if use_nvenc:
+            cmd += ["-c:v", "h264_nvenc", "-preset", settings.nvenc_preset]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", settings.x264_preset, "-profile:v", prof.profile]
+        cmd += [
+            "-b:v", prof.video_bitrate, "-maxrate", prof.maxrate, "-bufsize", prof.bufsize,
+            "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_DURATION})", "-sc_threshold", "0",
+            "-an", "-movflags", "+faststart", str(outp),
+        ]
+    return cmd
+
+
+def encode_ladder(
+    input_path: Path,
+    renditions_dir: Path,
+    total_seconds: float,
+    on_progress: ProgressCb | None = None,
+    should_cancel: CancelCb | None = None,
+) -> List[Path]:
+    """Encode ALL renditions in a single decode pass; return output paths in
+    PROFILES order. Tries the GPU ladder first (when NVENC is on) and falls back
+    to a single-pass CPU ladder if the GPU path fails."""
+    settings = get_settings()
+    outputs = [(p, renditions_dir / f"v_{p.name}.mp4") for p in PROFILES]
+    if settings.use_nvenc:
+        try:
+            _run_ffmpeg_progress(
+                build_ladder_command(input_path, outputs, use_nvenc=True),
+                total_seconds, on_progress, should_cancel,
+            )
+            return [outp for _, outp in outputs]
+        except RuntimeError as exc:
+            logger.warning("nvenc_ladder_failed_falling_back_to_cpu", error=str(exc)[:300])
+
+    _run_ffmpeg_progress(
+        build_ladder_command(input_path, outputs, use_nvenc=False),
+        total_seconds, on_progress, should_cancel,
+    )
+    return [outp for _, outp in outputs]
 
 
 def _label_hls_audio(master_path: Path, audio_tracks: List[Dict[str, Any]]) -> None:
