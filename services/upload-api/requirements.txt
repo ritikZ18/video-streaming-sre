@@ -1,11 +1,11 @@
-fastapi==0.115.0
+fastapi==0.139.2
 uvicorn[standard]==0.30.5
 boto3==1.35.0
-pydantic==2.8.2
-pydantic-settings==2.4.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
 structlog==24.4.0
 prometheus-client==0.20.0
-python-multipart==0.0.9
+python-multipart==0.0.32
 httpx==0.27.0
 
 pytest==8.3.2
