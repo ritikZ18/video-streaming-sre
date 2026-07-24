@@ -5,11 +5,9 @@ import { Lock, LogOut } from "lucide-react";
 import { Navbar } from "../../components/layout/Navbar";
 import { Footer } from "../../components/layout/Footer";
 import { UploadDropzone } from "../../components/upload/UploadDropzone";
-import { UploadForm } from "../../components/upload/UploadForm";
-import { UploadProgress } from "../../components/upload/UploadProgress";
+import { UploadQueue } from "../../components/upload/UploadQueue";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
-import type { Movie } from "../../lib/types";
-import { uploadVideo, adminLogin, MAX_UPLOAD_MB } from "../../lib/api";
+import { adminLogin } from "../../lib/api";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
 export default function AdminPage() {
@@ -22,7 +20,7 @@ export default function AdminPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-black text-white">
+    <div className="min-h-screen text-white">
       <Navbar />
       <main className="px-8 pt-24 pb-16">
         {!checked ? null : authed ? (
@@ -105,50 +103,26 @@ function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-// Survives a page refresh: the transcode runs server-side, so we only need to
-// remember which job to reattach the progress view to on reload.
-const ACTIVE_JOB_KEY = "streamsre.activeJob";
-
 function AdminPanel({ onLogout }: { onLogout: () => void }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [, setMovieMeta] = useState<Partial<Movie> | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [uploadPct, setUploadPct] = useState(0);
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
 
-  // Reattach to an in-flight transcode after a reload (refresh-safe).
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(ACTIVE_JOB_KEY);
-      if (saved) {
-        setJobId(saved);
-        setUploadPct(100); // the upload itself already finished
-      }
-    } catch {
-      /* localStorage unavailable — non-fatal */
-    }
-  }, []);
-
-  const clearJob = () => {
-    setJobId(null);
-    setUploadPct(0);
-    setStreamUrl(null);
-    try {
-      localStorage.removeItem(ACTIVE_JOB_KEY);
-    } catch {
-      /* ignore */
-    }
+  const addFiles = (picked: File[]) => {
+    const key = (f: File) => `${f.name}::${f.size}::${f.lastModified}`;
+    setFiles((prev) => {
+      const have = new Set(prev.map(key));
+      const additions = picked.filter((f) => !have.has(key(f)));
+      return additions.length ? [...prev, ...additions] : prev;
+    });
   };
 
   return (
     <>
       <div className="mb-8 flex max-w-3xl items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Admin · Upload</h1>
+          <h1 className="text-2xl font-bold tracking-heading">Admin · Upload</h1>
           <p className="mt-2 text-sm text-white/70">
-            Ingest a new video. The Upload API stores the raw file, enqueues a
-            transcode job, and the worker publishes HLS + DASH renditions.
+            Drop one or many videos. Each is uploaded, then the worker transcodes
+            them to HLS + DASH one at a time.
           </p>
         </div>
         <button
@@ -161,72 +135,9 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
         </button>
       </div>
 
-      <div className="grid gap-8 md:grid-cols-[2fr,3fr]">
-        <UploadDropzone file={file} onFileSelected={setFile} />
-        <UploadForm
-          disabled={!file}
-          file={file}
-          onSubmitted={async (meta) => {
-            setMovieMeta(meta);
-            setError(null);
-            if (!file) return;
-            if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-              setError(
-                `File is too large (${(file.size / 1024 / 1024).toFixed(0)} MB). Max is ${MAX_UPLOAD_MB} MB.`,
-              );
-              return;
-            }
-            setUploadPct(0);
-            try {
-              const res = await uploadVideo(
-                file,
-                {
-                  title: meta.title,
-                  genre: meta.genre,
-                  year: meta.year,
-                  rating: meta.rating,
-                  duration: meta.duration,
-                  description: meta.description,
-                  tag: meta.tag ?? undefined,
-                },
-                (pct) => setUploadPct(pct),
-              );
-              setJobId(res.job_id);
-              try {
-                localStorage.setItem(ACTIVE_JOB_KEY, res.job_id);
-              } catch {
-                /* ignore */
-              }
-            } catch (e) {
-              setError((e as Error).message);
-            }
-          }}
-        />
-      </div>
-
-      <div className="mt-10">
-        <UploadProgress
-          uploadPct={uploadPct}
-          jobId={jobId}
-          onComplete={(url) => {
-            setStreamUrl(url);
-            try {
-              localStorage.removeItem(ACTIVE_JOB_KEY);
-            } catch {
-              /* ignore */
-            }
-          }}
-          onCancel={clearJob}
-        />
-        {streamUrl && (
-          <div className="mt-4 text-sm text-white/80">
-            Stream ready:{" "}
-            <a href={`/player?url=${encodeURIComponent(streamUrl)}`} className="underline">
-              open player
-            </a>
-          </div>
-        )}
-        {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
+      <div className="grid max-w-4xl gap-6">
+        <UploadDropzone count={files.length} onFilesSelected={addFiles} />
+        <UploadQueue files={files} onClear={() => setFiles([])} />
       </div>
 
       <AdminMovieForm />
