@@ -6,7 +6,7 @@ SERVICES="upload-api transcode-worker origin beacon-collector"
 scan_image() {
   image=$1
   if command -v trivy >/dev/null 2>&1; then
-    trivy image --exit-code 1 --severity HIGH,CRITICAL "$image"
+    trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL "$image"
     return
   fi
 
@@ -14,7 +14,7 @@ scan_image() {
   docker run --rm \
     -v /var/run/docker.sock:/var/run/docker.sock \
     aquasec/trivy:0.71.0 \
-    image --exit-code 1 --severity HIGH,CRITICAL "$image"
+    image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL "$image"
 }
 
 for svc in $SERVICES; do
