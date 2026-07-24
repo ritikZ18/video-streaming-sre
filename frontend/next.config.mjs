@@ -1,9 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  experimental: {
-    appDir: true,
-  },
   env: {
     NEXT_PUBLIC_API_URL: process.env.VITE_API_URL || "http://localhost:8000",
     NEXT_PUBLIC_ORIGIN_URL: process.env.VITE_ORIGIN_URL || "http://localhost:8080",

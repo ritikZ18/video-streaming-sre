@@ -33,9 +33,17 @@ class Settings(BaseSettings):
     sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
     sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
 
+    # DynamoDB (catalog)
+    dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
+    dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
+    # Admin auth (gates the write endpoints: upload + create movie)
+    admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
+    admin_password: str = Field(default="admin", alias="ADMIN_PASSWORD")
+
     # Upload behaviour
     upload_api_port: int = Field(default=8000, alias="UPLOAD_API_PORT")
-    max_upload_size_mb: int = Field(default=500, alias="MAX_UPLOAD_SIZE_MB")
+    max_upload_size_mb: int = Field(default=5000, alias="MAX_UPLOAD_SIZE_MB")
     allowed_extensions: str = Field(default="mp4,mov,mkv", alias="ALLOWED_EXTENSIONS")
     rate_limit_per_minute: int = Field(default=60, alias="RATE_LIMIT_PER_MINUTE")
 

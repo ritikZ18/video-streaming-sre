@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Genre, Rating, Tag } from "../../lib/types";
-import { createMovie } from "../../lib/api";
+import { createMovie, ORIGIN_URL } from "../../lib/api";
 
 const GENRES: Genre[] = ["Action", "Sci-Fi", "Drama", "Comedy", "Documentary"];
 const RATINGS: Rating[] = ["G", "PG", "PG-13", "R", "NC-17"];
@@ -40,20 +40,18 @@ export function AdminMovieForm() {
     setSubmitting(true);
     setMessage(null);
     try {
-      const desc = description || "";
-      const composedDescription = hlsId
-        ? `${desc}\n\nHLS prefix id: ${hlsId}`
-        : desc;
       await createMovie({
         title,
         genre,
         year: Number.parseInt(year, 10) || 2025,
         rating,
         duration: duration || undefined,
-        description: composedDescription || undefined,
+        description: description || undefined,
         tag: tag || undefined,
+        // Point playback at the existing HLS assets under this folder id.
+        manifest_url: `${ORIGIN_URL}/hls/${hlsId}/master.m3u8`,
       });
-      setMessage("Movie metadata saved. Ensure HLS is under segments bucket using this id.");
+      setMessage("Movie added. It will play from the origin using this HLS folder id.");
       setTitle("");
       setDuration("");
       setDescription("");

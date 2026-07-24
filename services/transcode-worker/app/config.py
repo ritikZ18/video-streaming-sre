@@ -25,8 +25,21 @@ class Settings(BaseSettings):
     sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
     sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
 
-    ffmpeg_threads: int = Field(default=2, alias="FFMPEG_THREADS")
+    # DynamoDB (catalog) — the worker flips a movie to "ready" on completion.
+    dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
+    dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
+    # Browser-facing origin base URL used to build playback manifest URLs.
+    origin_base_url: str = Field(default="http://localhost:8080", alias="ORIGIN_BASE_URL")
+
+    ffmpeg_threads: int = Field(default=0, alias="FFMPEG_THREADS")  # 0 = use all cores
     transcode_timeout_seconds: int = Field(default=900, alias="TRANSCODE_TIMEOUT_SECONDS")
+
+    # Encoder: libx264 (CPU) by default; set USE_NVENC=1 once the container has
+    # GPU access (nvidia-container-toolkit) to use h264_nvenc + CUDA decode.
+    x264_preset: str = Field(default="veryfast", alias="X264_PRESET")
+    use_nvenc: bool = Field(default=False, alias="USE_NVENC")
+    nvenc_preset: str = Field(default="p4", alias="NVENC_PRESET")
 
 
 @lru_cache(maxsize=1)

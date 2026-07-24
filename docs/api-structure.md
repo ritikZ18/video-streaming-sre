@@ -1,230 +1,193 @@
-## API Structure – Mini Video Streaming Platform
+# API Structure — Mini Video Streaming Platform
 
-This document outlines the **high‑level API design** for the platform. It is meant as a planning/specification doc you can point to in interviews and implement incrementally.
+The **actual** HTTP surface as implemented. The Apple-TV UI talks to three
+services: **Upload API** (ingest + catalog + job status), **Beacon** (QoE
+telemetry), and the **Origin** (manifests + segments).
 
-The APIs are grouped by service:
-
-- **Upload API** – ingest raw videos and track transcode jobs.
-- **Catalog API** – manage movie metadata (used by the Apple TV–style UI).
-- **Beacon API** – collect quality‑of‑experience telemetry from the player.
+Interactive docs: `http://localhost:8000/docs` and `http://localhost:8001/docs`.
 
 ---
 
-## 1. Upload API
+## 1. Upload API — `http://localhost:8000`
 
-**Base URL (local)**: `http://localhost:8000`
+The Upload API owns both ingestion **and** the movie catalog (backed by
+DynamoDB). There is no separate catalog service.
 
-### 1.1 `POST /upload`
+### Authentication
 
-**Description**: Upload a new video for ingestion.
+Read endpoints (`GET /movies`, `GET /jobs/{id}`, health) are **public**. The
+**write** endpoints — `POST /upload` and `POST /movies` — require **HTTP Basic
+auth** with the admin credentials (`ADMIN_USERNAME` / `ADMIN_PASSWORD`, default
+`admin`/`admin`). Missing or wrong credentials return `401`. The web UI collects
+these on the `/admin` login screen and sends them as an `Authorization: Basic …`
+header with each write.
 
-- **Request**:
-  - Content‑Type: `multipart/form-data`
-  - Fields:
-    - `file` (required) – video file, max ~500MB.
-    - `title` (required) – string.
-    - `description` (optional) – string.
-    - `genre` (required) – string (e.g. `Action`, `Sci-Fi`).
-    - `year` (required) – int.
-    - `rating` (required) – e.g. `PG-13`.
-    - `tag` (optional) – e.g. `Trending`, `New Release`.
-- **Response** `202 Accepted`:
+### 1.1 `POST /api/v1/upload` 🔒 admin
+
+Ingest a video and register a catalog entry. Requires admin Basic auth.
+
+- **Content-Type**: `multipart/form-data`
+- **Fields**:
+  - `file` (required) — video file (`mp4`, `mov`, `mkv`), up to 500 MB.
+  - `title`, `genre`, `year` (int), `rating`, `duration`, `tag`, `description`
+    — all **optional**; sensible defaults are applied (e.g. `title` = filename).
+- **`202 Accepted`**:
+  ```json
+  { "job_id": "b1c2...", "status": "queued" }
+  ```
+- Side effects: raw file → `raw-uploads` bucket; catalog row created with
+  `status=processing` and `id == job_id`; SQS transcode job enqueued.
+
+### 1.2 `GET /api/v1/jobs/{job_id}`
+
+Job status, derived from the presence of `master.m3u8` in the segments bucket.
+
+- **`200 OK`**:
+  ```json
+  { "job_id": "b1c2...", "status": "processing", "stream_url": null }
+  ```
+  When complete:
   ```json
   {
-    "job_id": "uuid",
-    "movie_id": "uuid",
-    "status": "queued"
+    "job_id": "b1c2...",
+    "status": "complete",
+    "stream_url": "http://localhost:8080/hls/b1c2.../master.m3u8"
   }
   ```
+  `status` ∈ `queued | processing | complete`.
 
-### 1.2 `GET /jobs/{job_id}`
+### 1.3 `GET /api/v1/movies/`
 
-**Description**: Check the status of a transcode job.
+List the catalog (used by the home + browse pages).
 
-- **Response** `200 OK`:
+- **`200 OK`**:
   ```json
   {
-    "job_id": "uuid",
-    "movie_id": "uuid",
-    "status": "queued | processing | completed | failed",
-    "error_message": null
-  }
-  ```
-
-### 1.3 Health & Metrics
-
-- `GET /health` – basic health probe (no heavy dependencies).
-- `GET /ready` – readiness probe (checks queue, storage access).
-- `GET /metrics` – Prometheus metrics endpoint.
-
----
-
-## 2. Catalog API
-
-**Base URL (local)**: e.g. `http://localhost:8002` (you can choose).
-
-This API front‑ends the **Postgres catalog database** and is what the **React UI** uses for:
-
-- Home page carousels.
-- Search.
-- Adding movies via the “Add Movie” panel.
-
-### 2.1 `GET /catalog/movies`
-
-**Description**: List movies with optional filters and search.
-
-- **Query params**:
-  - `genre` (optional) – filter by genre.
-  - `tag` (optional) – filter by tag (e.g. `Trending`).
-  - `q` (optional) – search in title/genre.
-  - `limit` (optional, default 50).
-- **Response** `200 OK`:
-  ```json
-  [
-    {
-      "id": "uuid",
-      "title": "Quantum Horizon",
-      "description": "A physicist discovers a portal...",
-      "genre": "Sci-Fi",
-      "year": 2025,
-      "rating": "PG-13",
-      "duration": "2h 14m",
-      "tag": "Trending",
-      "manifest_url": "https://cdn.example.com/movies/123/master.m3u8",
-      "thumbnail_url": "https://cdn.example.com/movies/123/cover.jpg"
-    }
-  ]
-  ```
-
-### 2.2 `GET /catalog/movies/{id}`
-
-**Description**: Get full details for a single movie.
-
-Used by the UI when opening the **Movie Detail** view.
-
-### 2.3 `POST /catalog/movies`
-
-**Description**: Add a new movie to the catalog.
-
-This is the **“one way to add movies to the database”** that the UI can call directly. It is perfect when:
-
-- You already have a manifest URL (e.g. test content).
-- You want to demo the product without running the full transcode pipeline.
-
-- **Request**:
-  ```json
-  {
-    "title": "Neon Ronin",
-    "description": "In a cyberpunk Tokyo...",
-    "genre": "Action",
-    "year": 2025,
-    "rating": "R",
-    "duration": "1h 58m",
-    "tag": "New Release",
-    "manifest_url": "https://cdn.example.com/movies/neon-ronin/master.m3u8",
-    "thumbnail_url": "https://cdn.example.com/movies/neon-ronin/cover.jpg"
-  }
-  ```
-
-- **Response** `201 Created`:
-  ```json
-  {
-    "id": "uuid",
-    "title": "Neon Ronin",
-    "genre": "Action",
-    "year": 2025,
-    "rating": "R",
-    "duration": "1h 58m",
-    "tag": "New Release",
-    "manifest_url": "...",
-    "thumbnail_url": "...",
-    "created_at": "2025-01-01T12:00:00Z"
-  }
-  ```
-
-The **React UI** “Add Movie Panel” can simply:
-
-1. Collect this JSON via a form.
-2. Call `POST /catalog/movies`.
-3. On success, insert the new movie into local state so it appears instantly in rows.
-
----
-
-## 3. Beacon API
-
-**Base URL (local)**: `http://localhost:8001`
-
-### 3.1 `POST /beacon`
-
-**Description**: Ingest QoE events from the player.
-
-- **Request**:
-  ```json
-  {
-    "session_id": "uuid",
-    "movie_id": "uuid",
-    "events": [
+    "movies": [
       {
-        "type": "startup",
-        "timestamp_ms": 0,
-        "startup_time_ms": 1700
-      },
-      {
-        "type": "rebuffer",
-        "timestamp_ms": 25000,
-        "duration_ms": 900
-      },
-      {
-        "type": "bitrate_change",
-        "timestamp_ms": 30000,
-        "from_kbps": 2500,
-        "to_kbps": 800
+        "id": "b1c2...",
+        "title": "Aurora Drift",
+        "description": "…",
+        "genre": "Sci-Fi",
+        "year": 2025,
+        "rating": "PG-13",
+        "duration": "1h 58m",
+        "tag": "Trending",
+        "status": "ready",
+        "manifest_url": "http://localhost:8080/hls/b1c2.../master.m3u8",
+        "dash_url": "http://localhost:8080/hls/b1c2.../manifest.mpd",
+        "created_at": "2026-07-19T12:00:00Z"
       }
-    ],
-    "client": {
-      "platform": "web",
-      "app_version": "1.0.0",
-      "device": "desktop"
-    }
+    ]
   }
   ```
 
-- **Response** `202 Accepted`:
+### 1.4 `POST /api/v1/movies/` 🔒 admin
+
+Register a movie directly (admin flow — e.g. HLS assets that already exist).
+Requires admin Basic auth. The UI's "Add Movie" form derives `manifest_url` from
+an HLS folder id (`<origin>/hls/<id>/master.m3u8`) so the entry is playable.
+
+- **Request** (`application/json`):
+  ```json
+  {
+    "title": "Neon Ronin",
+    "genre": "Action",
+    "year": 2025,
+    "rating": "R",
+    "duration": "1h 58m",
+    "tag": "New Release",
+    "description": "…",
+    "manifest_url": "http://localhost:8080/hls/neon-ronin/master.m3u8"
+  }
+  ```
+- **`201 Created`** → the created `Movie` (with `id`, `created_at`,
+  `status: "ready"`).
+
+### 1.5 `GET /api/v1/admin/check` 🔒 admin
+
+Validate admin credentials (used by the `/admin` login screen). `200` +
+`{ "status": "ok", "user": "…" }` when the Basic auth is valid, else `401`.
+
+### 1.6 Health & metrics
+
+- `GET /health` → `{ "status": "ok" }`
+- `GET /ready` → `{ "status": "ready" }` (or `"degraded"` if storage is unreachable)
+- `GET /metrics` → Prometheus text (`upload_api_http_requests_total`, …)
+
+### `Movie` object
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | equals `job_id` for pipeline uploads |
+| `title`, `genre`, `rating` | string | |
+| `year` | int | |
+| `description`, `duration`, `tag` | string \| null | |
+| `status` | `processing` \| `ready` | |
+| `manifest_url`, `dash_url` | string \| null | set by the worker when ready |
+| `created_at` | ISO-8601 | |
+
+---
+
+## 2. Beacon API — `http://localhost:8001`
+
+### 2.1 `POST /api/v1/beacon/`
+
+Ingest a batch of QoE events from the player.
+
+- **Request** (`application/json`):
+  ```json
+  {
+    "session_id": "sess-123",
+    "content_id": "b1c2...",
+    "region": "us-east-1",
+    "player_version": "1.0.0",
+    "events": [
+      { "event": "startup", "timestamp": "2026-07-19T12:00:00Z", "startup_ms": 1700 },
+      { "event": "rebuffer", "timestamp": "2026-07-19T12:00:25Z", "rebuffer_ms": 900 },
+      { "event": "bitrate_switch", "timestamp": "2026-07-19T12:00:30Z", "current_bitrate_kbps": 800 },
+      { "event": "error", "timestamp": "2026-07-19T12:00:40Z", "error_type": "manifestLoadError" },
+      { "event": "heartbeat", "timestamp": "2026-07-19T12:00:45Z" }
+    ]
+  }
+  ```
+  `event` ∈ `startup | rebuffer | bitrate_switch | error | heartbeat`.
+- **`202 Accepted`**:
   ```json
   { "status": "accepted" }
   ```
+- Converts events into Prometheus metrics (startup histogram, rebuffer
+  events/duration, bitrate switches, errors, session counters).
 
-The service:
+### 2.2 Health & metrics
 
-- Validates payloads via Pydantic models.
-- Converts events into Prometheus metrics:
-  - Startup histogram.
-  - Rebuffer counters.
-  - Session heartbeats.
-
-### 3.2 Health & Metrics
-
-- `GET /health`
-- `GET /metrics`
+- `GET /health` → `{ "status": "ok" }`
+- `GET /metrics` → Prometheus text (`qoe_*`)
 
 ---
 
-## 4. How the Apple TV–Style UI Fits In
+## 3. Origin — `http://localhost:8080`
 
-The UI example you provided maps cleanly onto these APIs:
+Serves the manifests and CMAF segments the worker wrote to the segments bucket
+(path-style S3 proxy + cache).
 
-- **Home page load**:
-  - Calls `GET /catalog/movies?tag=Trending` for hero + trending row.
-  - Calls `GET /catalog/movies?genre=Action`, etc., for each genre row.
-- **Search bar**:
-  - Debounced calls to `GET /catalog/movies?q=query`.
-- **Add Movie Panel**:
-  - On submit, calls `POST /catalog/movies` with metadata and manifest URL.
-- **Play button**:
-  - Uses `manifest_url` from the movie to initialize hls.js and start playback.
-  - Sends QoE events to `POST /beacon`.
+- `GET /hls/{job_id}/master.m3u8` — HLS master playlist
+- `GET /hls/{job_id}/manifest.mpd` — DASH manifest (same segments)
+- `GET /hls/{job_id}/media_*.m3u8`, `.../*.m4s` — media playlists + CMAF segments
+- `GET /health` → `{ "status": "ok" }`
+- Nginx stub metrics on `:9113/nginx_status`
 
-This gives you a **clean, interview‑friendly story**:
+CORS (`Access-Control-Allow-Origin: *`) and per-content-type cache TTLs
+(short for manifests, long for immutable segments) are set at the origin.
 
-> “The Apple TV–style UI only talks to three services: Catalog for metadata, Upload for ingestion, and Beacon for telemetry. Everything else (transcoding, storage, CDN) is behind those APIs.”
+---
 
+## 4. How the UI maps onto these APIs
+
+- **Home / Browse** (public): `GET /api/v1/movies/` → hero + genre rows; polled
+  every 5s so `processing → ready` appears without a reload.
+- **`/admin`** (login-gated): `GET /api/v1/admin/check` to sign in, then
+  `POST /api/v1/upload` (file + metadata) and poll `GET /api/v1/jobs/{job_id}`
+  until `complete`. All writes carry the admin `Authorization` header.
+- **Play**: navigate to `/player?url=<manifest_url>`; hls.js loads it from the
+  **origin**; the player POSTs QoE events to `POST /api/v1/beacon/`.

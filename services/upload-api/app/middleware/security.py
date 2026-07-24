@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import DefaultDict
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from app.config import get_settings
 
@@ -44,7 +44,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
       bucket.last_refill = now
 
       if bucket.tokens < 1.0:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
 
       bucket.tokens -= 1.0
 
@@ -67,7 +67,9 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
         except ValueError:
           size = 0
         if size > self.max_bytes:
-          raise HTTPException(status_code=413, detail="Request body too large")
+          return JSONResponse(
+            status_code=413, content={"detail": "Request body too large"}
+          )
 
     return await call_next(request)
 

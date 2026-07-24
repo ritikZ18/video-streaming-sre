@@ -15,7 +15,7 @@ export function MovieCard({ movie, onClick, size = "normal" }: MovieCardProps) {
   const isLarge = size === "large";
 
   const baseClasses =
-    "relative flex-shrink-0 cursor-pointer overflow-hidden rounded-card shadow-glow-soft transition-transform duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)]";
+    "relative flex-shrink-0 cursor-pointer overflow-hidden rounded-card shadow-glow-soft transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)]";
 
   const dims = isLarge ? "min-w-[350px] h-[200px]" : "min-w-[220px] h-[130px]";
 
@@ -24,9 +24,19 @@ export function MovieCard({ movie, onClick, size = "normal" }: MovieCardProps) {
       onClick={() => onClick(movie)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ backgroundImage: movie.gradient }}
+      style={
+        movie.thumbnailUrl
+          ? {
+              backgroundImage: `url("${movie.thumbnailUrl}")`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }
+          : { backgroundImage: movie.gradient }
+      }
       className={`${baseClasses} ${dims} ${
-        hovered ? "scale-105" : "scale-100"
+        hovered
+          ? "z-10 -translate-y-1 scale-[1.06] ring-1 ring-white/25"
+          : "scale-100 ring-1 ring-white/5"
       }`}
     >
       <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/5 transition-opacity" />

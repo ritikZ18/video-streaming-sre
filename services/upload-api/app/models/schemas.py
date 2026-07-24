@@ -1,7 +1,19 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class AudioTrack(BaseModel):
+    language: str
+    label: str
+
+
+class SubtitleTrack(BaseModel):
+    language: str
+    label: str
+    url: str
+    forced: bool = False
 
 
 class UploadResponse(BaseModel):
@@ -13,6 +25,8 @@ class JobStatusResponse(BaseModel):
     job_id: str
     status: Literal["queued", "processing", "complete"]
     stream_url: str | None = None
+    progress: int = 0
+    stage: str | None = None
 
 
 class MovieBase(BaseModel):
@@ -26,12 +40,22 @@ class MovieBase(BaseModel):
 
 
 class MovieCreate(MovieBase):
-    pass
+    # Admins registering pre-existing HLS assets can supply the manifest URL.
+    manifest_url: str | None = None
 
 
 class Movie(MovieBase):
     id: str
     created_at: datetime
+    status: Literal["processing", "ready"] = "ready"
+    manifest_url: str | None = None
+    dash_url: str | None = None
+    thumbnail_url: str | None = None
+    progress: int = 0
+    stage: str | None = None
+    audio_tracks: list[AudioTrack] = Field(default_factory=list)
+    subtitle_tracks: list[SubtitleTrack] = Field(default_factory=list)
+    media_info: dict[str, Any] | None = None
 
 
 class MovieList(BaseModel):

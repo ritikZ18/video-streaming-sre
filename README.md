@@ -20,7 +20,7 @@ This project is designed so that in an interview you can walk through:
 At a high level the system is composed of:
 
 - **Upload API** – Receives video uploads, stores raw assets in object storage, and enqueues transcode jobs.
-- **Transcode Worker** – Consumes jobs, runs **FFmpeg** to generate HLS renditions and manifests, and writes them to the segments bucket.
+- **Transcode Worker** – Consumes jobs and runs **FFmpeg** once to produce a CMAF (fMP4) bitrate ladder, publishing **HLS** (`master.m3u8`) and **MPEG-DASH** (`manifest.mpd`) manifests from the *same* segments, then writes them to the segments bucket.
 - **Origin Gateway** – An Nginx layer that serves manifests and segments, with caching and security headers.
 - **Web Player** – A UI inspired by **Apple TV**, showing rows of movies and allowing playback.
 - **Beacon Collector** – Ingests QoE telemetry from the player (startup time, rebuffering, bitrate changes).
@@ -42,8 +42,9 @@ See `docs/architecture.md` for diagrams and data‑flow details.
 - **Workers**: Python + FFmpeg for transcoding and HLS packaging.
 - **Web player UI**: React (Apple TV–style hero & rows layout).
 - **Database (catalog)**: Postgres for movie metadata.
-- **Storage**: S3 (or LocalStack S3 in local dev) for video files.
-- **Queue**: SQS (or LocalStack SQS in local dev).
+- **Storage**: S3 (via the **floci** local AWS emulator in dev) for video files.
+- **Queue**: SQS (via **floci** in dev).
+- **Infra as code**: Terraform provisions the S3 buckets + SQS queues into floci (`infra/terraform`). See `docs/infra-floci.md`.
 - **Observability**: Prometheus, Grafana, Alertmanager, blackbox exporter.
 - **Containerization**: Docker, docker‑compose for local development.
 
@@ -51,51 +52,66 @@ Deployment to cloud (e.g. AWS ECS + CloudFront) is planned but implemented separ
 
 ---
 
-## Repository Structure (Current Phase)
+## Repository Structure
 
-This initial commit focuses on **project planning and documentation**:
-
-- `README.md` – This overview.
+- `services/` – Backend components:
+  - `upload-api/` – FastAPI upload endpoint; stores to S3, enqueues to SQS.
+  - `transcode-worker/` – SQS consumer; FFmpeg → CMAF + HLS/DASH manifests.
+  - `origin/` – Nginx origin that proxies/caches manifests + segments from S3.
+  - `beacon-collector/` – Ingests QoE telemetry from the player.
+- `frontend/` – Next.js player UI (Apple TV–style rows, `hls.js` playback).
+- `infra/terraform/` – Terraform for the S3 buckets + SQS queues (targets floci).
+- `observability/` – Prometheus, Grafana, Alertmanager configs and dashboards.
+- `slo/`, `runbooks/`, `chaos/` – SRE artifacts (SLOs, incident runbooks, chaos).
+- `security/` – Image + secret scanning scripts.
 - `docs/` – Detailed documentation:
   - `architecture.md` – System design, components, and data flows.
-  - `product.md` – What the product is, user experience, and what this project mimics.
-  - `database.md` – How the catalog database is used (schema, access patterns).
-  - `api-structure.md` – High‑level API surface for upload, catalog, and beacons.
-
-Future phases will add:
-
-- `services/` for each backend component (Upload API, Transcode Worker, Origin, Beacon Collector).
-- `frontend/` containing the React UI.
-- `observability/` for Prometheus, Grafana, and alert rules.
-- `slo/`, `runbooks/`, and `chaos/` directories for SRE artifacts.
+  - `product.md` – What the product is and what it mimics.
+  - `database.md` – Catalog DB schema and access patterns.
+  - `api-structure.md` – API surface for upload, catalog, and beacons.
+  - `design.md` – **Full application design** (goals, data model, flows, decisions).
+  - `infra-floci.md` – **How Terraform + the floci local AWS emulator work together.**
 
 ---
 
-## Local Development (Planned Flow)
+## Local Development
 
-Once the services are implemented, the typical local loop will be:
+AWS (S3 + SQS + DynamoDB) is emulated locally by **floci**, which runs as its
+own stack and listens on `http://localhost:4566`. See `docs/infra-floci.md` for
+the full story and `docs/design.md` for the complete application design.
 
-1. **Configure environment**  
-   - Copy `.env.example` → `.env` (will be added later).  
-   - Fill in local credentials / URLs (LocalStack, Postgres, etc.).
+**Quickest path — one command:**
 
-2. **Start the stack**  
-   - Use `docker-compose` to bring up:
-     - Upload API, Transcode Worker, Origin, Player UI.
-     - LocalStack (S3/SQS), Postgres (catalog DB).
-     - Prometheus, Grafana, Alertmanager.
+```bash
+./start.sh            # floci → Terraform infra → all services   (--seed for a demo clip)
+./stop.sh             # stop services   (./stop.sh --all also stops floci)
+```
 
-3. **Upload a sample video**  
-   - Call the Upload API or use the web player “Add Movie” flow.
+Or step by step with the Makefile:
 
-4. **Watch metrics & alerts**  
-   - Open Grafana dashboards to view:
-     - Origin latency and error rate.
-     - Transcode queue depth and failure rate.
-     - QoE metrics (startup time, rebuffering).
+```bash
+make floci-up      # 1. start floci (local AWS emulator)
+make tf-apply      # 2. Terraform creates S3 buckets + SQS queues + DynamoDB table
+cp .env.example .env   # 3. config already matches floci + terraform defaults
+make up            # 4. docker compose up (upload-api, worker, origin, player, obs stack)
+bash scripts/seed-test-video.sh   # 5. push a test clip through the pipeline
+```
 
-5. **Run chaos scenarios**  
-   - Kill origin / inject latency and observe SLO burn‑rate alerts.
+`make bootstrap` does steps 1–2; `make demo` does 1–5. Then:
+
+- **Browse & watch** on the public site (`http://localhost:3001`).
+- **Upload** at `http://localhost:3001/admin` — log in (default `admin`/`admin`,
+  set via `ADMIN_USERNAME` / `ADMIN_PASSWORD`). The video transcodes to HLS+DASH
+  and appears on the home grid within a few seconds (the grid auto-refreshes).
+- **Play** the result at `http://localhost:8080/hls/<job>/master.m3u8` (HLS) or
+  `.../manifest.mpd` (DASH).
+- **Watch metrics & alerts** in Grafana (`http://localhost:3000`): origin
+  latency/errors, transcode queue depth/failures, QoE (startup, rebuffering).
+- **Run chaos** (`chaos/`): kill origin / inject latency, observe SLO burn‑rate
+  alerts.
+
+If an upload stays **"Processing"**, run `bash scripts/diagnose.sh` — it dumps
+the worker logs plus the live S3 / SQS / DynamoDB state to show why.
 
 ---
 

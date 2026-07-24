@@ -1,8 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.config import get_settings
+from app.auth import require_admin
 from app.models.schemas import JobStatusResponse
-from app.services.s3 import object_exists
+from app.services import catalog
 
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
@@ -10,16 +10,41 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 @router.get("/{job_id}", response_model=JobStatusResponse)
 def get_job_status(job_id: str) -> JobStatusResponse:
-    settings = get_settings()
-    master_key = f"{job_id}/master.m3u8"
+    """Report transcode progress from the catalog (written by the worker)."""
+    movie = catalog.get(job_id)
+    if movie is None:
+        return JobStatusResponse(
+            job_id=job_id, status="queued", stream_url=None, progress=0, stage="queued"
+        )
+    if movie.status == "ready":
+        return JobStatusResponse(
+            job_id=job_id,
+            status="complete",
+            stream_url=movie.manifest_url,
+            progress=100,
+            stage="ready",
+        )
+    return JobStatusResponse(
+        job_id=job_id,
+        status="processing",
+        stream_url=None,
+        progress=movie.progress or 0,
+        stage=movie.stage or "queued",
+    )
 
-    if object_exists(settings.s3_segments_bucket, master_key):
-        stream_url = f"{settings.origin_base_url}/hls/{job_id}/master.m3u8"
-        return JobStatusResponse(job_id=job_id, status="complete", stream_url=stream_url)
 
-    # In this minimal implementation we cannot distinguish between queued
-    # and actively processing without additional state, so we expose a
-    # generic "processing" status for non-complete jobs.
-    return JobStatusResponse(job_id=job_id, status="processing", stream_url=None)
-
-
+@router.post("/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+def cancel_job(job_id: str, _admin: str = Depends(require_admin)) -> dict[str, str]:
+    """Flag a still-processing transcode for cancellation (admin only). The
+    worker aborts ffmpeg, deletes the source + any partial segments, and removes
+    the catalog row."""
+    movie = catalog.get(job_id)
+    if movie is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if movie.status == "ready":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job already completed",
+        )
+    catalog.request_cancel(job_id)
+    return {"job_id": job_id, "status": "canceling"}

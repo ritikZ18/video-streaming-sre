@@ -8,9 +8,10 @@ import { Play } from "lucide-react";
 type HeroCarouselProps = {
   movies: Movie[];
   onMoreInfo: (movie: Movie) => void;
+  onPlay?: (movie: Movie) => void;
 };
 
-export function HeroCarousel({ movies, onMoreInfo }: HeroCarouselProps) {
+export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) {
   const featured = useMemo(
     () => (movies.length ? movies : []),
     [movies],
@@ -39,8 +40,12 @@ export function HeroCarousel({ movies, onMoreInfo }: HeroCarouselProps) {
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 1.02 }}
           transition={{ duration: 0.8, ease: "easeOut" }}
-          className="absolute inset-0"
-          style={{ backgroundImage: current.gradient }}
+          className="absolute inset-0 bg-cover bg-center"
+          style={
+            current.thumbnailUrl
+              ? { backgroundImage: `url("${current.thumbnailUrl}")` }
+              : { backgroundImage: current.gradient }
+          }
         >
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(0,0,0,0.1),rgba(0,0,0,0.9))]" />
           <div className="absolute inset-x-0 bottom-0 h-64 bg-gradient-to-t from-black via-black/60 to-transparent" />
@@ -67,10 +72,13 @@ export function HeroCarousel({ movies, onMoreInfo }: HeroCarouselProps) {
           <div className="flex gap-3 pt-2">
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-2.5 text-sm font-bold text-black shadow-glow-soft transition-opacity hover:opacity-90"
+              onClick={() => onPlay?.(current)}
+              disabled={!onPlay || !current.manifestUrl}
+              title={current.manifestUrl ? "Play" : "Still processing"}
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-2.5 text-sm font-bold text-black shadow-glow-soft transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Play className="h-4 w-4 fill-black text-black" />
-              Play
+              {current.status === "processing" ? "Processing…" : "Play"}
             </button>
             <button
               type="button"

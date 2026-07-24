@@ -46,9 +46,14 @@ def enqueue_transcode_job(job_id: str, s3_key: str, filename: str) -> None:
     except ClientError as exc:  # pragma: no cover - network error
         error_code = exc.response.get("Error", {}).get("Code")
         if error_code in {"AWS.SimpleQueueService.NonExistentQueue"}:
-            # Lazily create queue in local dev and retry once.
+            # Lazily create queue in local dev and retry once. A long
+            # VisibilityTimeout keeps an in-flight transcode (minutes long) from
+            # being redelivered to another worker while it is still processing.
             queue_name = settings.sqs_transcode_queue_url.rstrip("/").split("/")[-1]
-            client.create_queue(QueueName=queue_name)
+            client.create_queue(
+                QueueName=queue_name,
+                Attributes={"VisibilityTimeout": "1800"},
+            )
             client.send_message(
                 QueueUrl=settings.sqs_transcode_queue_url,
                 MessageBody=body,

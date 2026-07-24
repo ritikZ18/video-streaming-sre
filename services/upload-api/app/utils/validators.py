@@ -9,6 +9,7 @@ from app.config import get_settings
 
 MP4_SIGNATURES = (b"ftypisom", b"ftypmp4", b"ftypM4V")
 MKV_SIGNATURE = b"matroska"
+EBML_SIGNATURE = b"\x1aE\xdf\xa3"  # Matroska / WebM container header (bytes 0-3)
 
 
 def validate_extension(filename: str) -> None:
@@ -35,10 +36,13 @@ def _read_magic(fileobj: BinaryIO, max_bytes: int = 16) -> bytes:
 
 def validate_magic_bytes(upload: UploadFile) -> None:
     """Validate container format via magic bytes for mp4/mov/mkv."""
-    header = _read_magic(upload.file)
+    # Read enough to reach the Matroska "doctype": the EBML header id is at
+    # bytes 0-3 but the "matroska" string sits ~24 bytes in, so a 16-byte read
+    # used to reject valid .mkv files with a 400.
+    header = _read_magic(upload.file, 64)
     if any(sig in header for sig in MP4_SIGNATURES):
         return
-    if MKV_SIGNATURE in header:
+    if header.startswith(EBML_SIGNATURE) or MKV_SIGNATURE in header:
         return
 
     raise HTTPException(
@@ -50,16 +54,14 @@ def validate_magic_bytes(upload: UploadFile) -> None:
 def validate_size(upload: UploadFile) -> None:
     settings = get_settings()
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    # Read file once into memory for size check; for a portfolio project this is acceptable.
-    upload.file.seek(0)
-    data = upload.file.read()
-    size = len(data)
+    # Measure size via seek (do NOT read the whole file into memory).
+    upload.file.seek(0, 2)  # seek to end
+    size = upload.file.tell()
+    upload.file.seek(0)  # reset for downstream streaming upload
     if size > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Uploaded file exceeds maximum size",
         )
-    # Reset file handle so downstream can re-read from start.
-    upload.file.seek(0)
 
 

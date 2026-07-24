@@ -7,9 +7,10 @@ import type { Movie } from "../../lib/types";
 type MovieDetailProps = {
   movie: Movie;
   onClose: () => void;
+  onPlay?: (movie: Movie) => void;
 };
 
-export function MovieDetail({ movie, onClose }: MovieDetailProps) {
+export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
   return (
     <AnimatePresence>
       <motion.div
@@ -24,12 +25,16 @@ export function MovieDetail({ movie, onClose }: MovieDetailProps) {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 24 }}
           transition={{ duration: 0.25, ease: "easeOut" }}
-          className="relative flex w-[90%] max-w-xl flex-col overflow-hidden rounded-modal bg-zinc-900 shadow-2xl"
+          className="relative flex w-[90%] max-w-xl flex-col overflow-hidden rounded-modal border border-white/10 bg-zinc-900/70 shadow-2xl ring-1 ring-white/5 backdrop-blur-2xl backdrop-saturate-150"
           onClick={(event) => event.stopPropagation()}
         >
           <div
-            className="relative h-64"
-            style={{ backgroundImage: movie.gradient }}
+            className="relative h-64 bg-cover bg-center"
+            style={
+              movie.thumbnailUrl
+                ? { backgroundImage: `url("${movie.thumbnailUrl}")` }
+                : { backgroundImage: movie.gradient }
+            }
           >
             <div className="absolute inset-0 bg-gradient-to-t from-zinc-900 to-transparent" />
             <button
@@ -70,9 +75,12 @@ export function MovieDetail({ movie, onClose }: MovieDetailProps) {
             <div className="flex gap-3 pt-1">
               <button
                 type="button"
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-black transition-opacity hover:opacity-90"
+                onClick={() => onPlay?.(movie)}
+                disabled={!onPlay || !movie.manifestUrl}
+                title={movie.manifestUrl ? "Play" : "Still processing"}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <span>Play</span>
+                <span>{movie.status === "processing" ? "Processing…" : "Play"}</span>
               </button>
               <button
                 type="button"
