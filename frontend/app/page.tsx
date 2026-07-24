@@ -60,7 +60,7 @@ export default function HomePage() {
   }, [movies]);
 
   return (
-    <div className="min-h-screen bg-black text-white">
+    <div className="min-h-screen text-white">
       <Navbar />
       <main className="relative z-0">
         <HeroCarousel movies={movies.filter((m) => m.tag === "Trending" || m.tag === "New Release")} onMoreInfo={setSelectedMovie} onPlay={playMovie} />

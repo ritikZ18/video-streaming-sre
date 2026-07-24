@@ -39,10 +39,10 @@ export default function PlayerPage() {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col bg-black text-white">
+    <div className="flex min-h-screen flex-col text-white">
       <Navbar />
       <main className="flex-1 pt-16">
-        <section className="mx-auto w-full max-w-5xl px-4 py-8">
+        <section className="mx-auto w-full max-w-[1440px] px-4 py-6">
           <button
             type="button"
             onClick={() => window.history.back()}

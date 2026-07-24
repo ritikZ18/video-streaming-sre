@@ -15,7 +15,9 @@ export function Navbar() {
   const router = useRouter();
 
   return (
-    <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between border-b border-white/10 bg-black/40 px-8 py-4 backdrop-blur-xl backdrop-saturate-150 transition-colors">
+    // Consistently transparent — a simple top-down fade for legibility, no
+    // scroll-driven background switching.
+    <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between bg-gradient-to-b from-[#0a0a0f]/85 via-[#0a0a0f]/40 to-transparent px-8 py-4">
       <div className="flex items-center gap-8">
         <button
           type="button"

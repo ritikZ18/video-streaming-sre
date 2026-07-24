@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef } from "react";
+import { motion, useReducedMotion, type Variants } from "framer-motion";
 import type { Movie } from "../../lib/types";
-import { Play } from "lucide-react";
+import { springy } from "../../lib/motion";
 
 type MovieCardProps = {
   movie: Movie;
@@ -10,58 +11,115 @@ type MovieCardProps = {
   size?: "normal" | "large";
 };
 
+const REST_SHADOW =
+  "0 8px 22px -12px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0)";
+const FOCUS_SHADOW =
+  "0 26px 44px -18px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.10), inset 0 1px 0 rgba(255,255,255,0.14)";
+
 export function MovieCard({ movie, onClick, size = "normal" }: MovieCardProps) {
-  const [hovered, setHovered] = useState(false);
+  const posterRef = useRef<HTMLDivElement | null>(null);
+  const reduce = useReducedMotion();
   const isLarge = size === "large";
 
-  const baseClasses =
-    "relative flex-shrink-0 cursor-pointer overflow-hidden rounded-card shadow-glow-soft transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)]";
+  // Portrait 2:3 posters (Apple-TV). Landscape thumbnails are cropped to fit.
+  const bg = movie.thumbnailUrl
+    ? {
+        backgroundImage: `url("${movie.thumbnailUrl}")`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      }
+    : { backgroundImage: movie.gradient };
 
-  const dims = isLarge ? "min-w-[350px] h-[200px]" : "min-w-[220px] h-[130px]";
+  // Pointer-tracked specular highlight — set CSS vars directly (no re-render).
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = posterRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.style.setProperty("--mx", `${((e.clientX - r.left) / r.width) * 100}%`);
+    el.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
+  };
+
+  // Parent drives child variants via framer's label propagation ("off" → "on").
+  const posterV: Variants = {
+    off: { y: 0, scale: 1, boxShadow: REST_SHADOW },
+    on: reduce
+      ? { y: 0, scale: 1, boxShadow: FOCUS_SHADOW }
+      : { y: -8, scale: 1.07, boxShadow: FOCUS_SHADOW },
+  };
+  const layerV: Variants = { off: { opacity: 0 }, on: { opacity: 1 } };
+  // NOTE: mockup hides the caption until focus, but our catalog uses synthesized
+  // gradient posters (no real art), so a hidden title = unidentifiable. Keep it
+  // dim and brighten on focus instead.
+  const capV: Variants = {
+    off: { opacity: 0.72, y: 0 },
+    on: { opacity: 1, y: 0 },
+  };
 
   return (
-    <div
+    <motion.div
+      className={`group ${isLarge ? "w-[190px]" : "w-[150px]"} flex-shrink-0 cursor-pointer rounded-poster outline-none focus-visible:ring-2 focus-visible:ring-white/60`}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${movie.title}`}
+      initial="off"
+      animate="off"
+      whileHover="on"
+      whileFocus="on"
       onClick={() => onClick(movie)}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={
-        movie.thumbnailUrl
-          ? {
-              backgroundImage: `url("${movie.thumbnailUrl}")`,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-            }
-          : { backgroundImage: movie.gradient }
-      }
-      className={`${baseClasses} ${dims} ${
-        hovered
-          ? "z-10 -translate-y-1 scale-[1.06] ring-1 ring-white/25"
-          : "scale-100 ring-1 ring-white/5"
-      }`}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick(movie);
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          (e.currentTarget.nextElementSibling as HTMLElement | null)?.focus();
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          (e.currentTarget.previousElementSibling as HTMLElement | null)?.focus();
+        }
+      }}
     >
-      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/5 transition-opacity" />
+      <motion.div
+        ref={posterRef}
+        onPointerMove={onPointerMove}
+        variants={posterV}
+        transition={springy}
+        style={bg}
+        className="relative aspect-[2/3] w-full overflow-hidden rounded-poster bg-surface-1 ring-1 ring-white/[0.06]"
+      >
+        {/* Subtle diagonal glass sheen (fades in on focus). */}
+        <motion.div
+          variants={layerV}
+          transition={{ duration: 0.35 }}
+          className="pointer-events-none absolute inset-0 z-[2] rounded-poster"
+          style={{
+            backgroundImage:
+              "linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.03) 42%, transparent 60%)",
+          }}
+        />
 
-      {movie.tag && (
-        <div className="absolute left-2.5 top-2.5 rounded-full bg-white/15 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white backdrop-blur-xl">
-          {movie.tag}
-        </div>
-      )}
+        {/* Pointer-tracked specular shine (screen blend, gentle). */}
+        <motion.div
+          variants={layerV}
+          transition={{ duration: 0.4 }}
+          className="pointer-events-none absolute inset-0 z-[3] rounded-poster"
+          style={{
+            mixBlendMode: "screen",
+            background:
+              "radial-gradient(140px 140px at var(--mx,50%) var(--my,50%), rgba(255,255,255,0.28), rgba(255,255,255,0.04) 45%, transparent 64%)",
+          }}
+        />
+      </motion.div>
 
-      <div className="absolute inset-x-3 bottom-3">
-        <div className="truncate text-sm font-bold text-white">
+      {/* Caption below the poster, revealed on focus. */}
+      <motion.div variants={capV} transition={springy} className="mt-2.5 px-0.5 text-center">
+        <div className="truncate text-[13.5px] font-medium tracking-bodytight text-white">
           {movie.title}
         </div>
-        <div className="text-[11px] font-medium text-white/60">
+        <div className="text-[12px] text-ink-3">
           {movie.genre} · {movie.year}
         </div>
-      </div>
-
-      {hovered && (
-        <div className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/25 backdrop-blur-xl">
-          <Play className="h-4 w-4 fill-white text-white" />
-        </div>
-      )}
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
-

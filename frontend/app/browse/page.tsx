@@ -56,7 +56,7 @@ export default function BrowsePage() {
   }, [movies, genre, search]);
 
   return (
-    <div className="min-h-screen bg-black text-white">
+    <div className="min-h-screen text-white">
       <Navbar />
       <main className="px-8 pt-24 pb-16">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -95,7 +95,7 @@ export default function BrowsePage() {
             />
           </div>
         </div>
-        <section className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+        <section className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] justify-items-center gap-x-4 gap-y-7">
           {filtered.map((movie) => (
             <MovieCard
               key={movie.id}

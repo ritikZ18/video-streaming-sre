@@ -48,7 +48,7 @@ export default function SreDashboardPage() {
     process.env.NEXT_PUBLIC_GRAFANA_URL || "http://localhost:3000";
 
   return (
-    <div className="min-h-screen bg-black text-white">
+    <div className="min-h-screen text-white">
       <Navbar />
       <main className="px-8 pt-24 pb-16 space-y-10">
         <section>

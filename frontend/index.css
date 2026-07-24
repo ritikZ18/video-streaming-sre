@@ -12,8 +12,17 @@
   display: none;
 }
 
+/* Depth instead of a flat black void: a lifted base tone plus a soft top
+   ambient light that stays anchored to the viewport as you scroll. */
 body {
-  background-color: #000000;
+  background-color: #0a0a0f;
+  background-image: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(70, 70, 110, 0.22),
+    transparent 60%
+  );
+  background-repeat: no-repeat;
+  background-attachment: fixed;
 }
 
 input::placeholder,
