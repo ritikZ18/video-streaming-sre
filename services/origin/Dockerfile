@@ -1,4 +1,4 @@
-FROM nginx:1.25-alpine
+FROM nginx:1.30.4-alpine3.24
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
@@ -21,4 +21,3 @@ EXPOSE 8080 9113
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD /healthcheck.sh
-
