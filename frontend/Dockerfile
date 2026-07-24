@@ -21,10 +21,18 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN apk upgrade --no-cache \
+ && npm ci --omit=dev \
+ && npm cache clean --force \
+ && rm -rf /usr/local/lib/node_modules/npm \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx \
+    /opt/yarn-* \
+    /usr/local/bin/yarn \
+    /usr/local/bin/yarnpkg
 COPY next.config.mjs ./
 COPY --from=build /app/.next ./.next
 
 EXPOSE 80
 
-CMD ["npm", "run", "start", "--", "-p", "80"]
+CMD ["node", "node_modules/next/dist/bin/next", "start", "-p", "80"]
