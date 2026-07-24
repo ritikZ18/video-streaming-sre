@@ -1,0 +1,184 @@
+#############################################
+# StreamSRE – .gitignore
+#############################################
+
+#############################################
+# Environment & Secrets
+#############################################
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.*.local
+*.env
+*.env.*
+.envrc
+
+# ...but keep the committed template:
+!.env.example
+
+secrets/
+credentials/
+*.pem
+*.key
+*.cert
+*.p12
+
+aws-exports.js
+
+#############################################
+# Python
+#############################################
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+#############################################
+# Virtual Environments
+#############################################
+.venv/
+venv/
+ENV/
+env/
+.ENV/
+.python-version
+
+#############################################
+# Packaging / Build Artifacts
+#############################################
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+#############################################
+# Testing / Coverage / Type Checks
+#############################################
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+#############################################
+# Node / Frontend
+#############################################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+# npm ci requires the lockfile in clean CI checkouts.
+!frontend/package-lock.json
+
+#############################################
+# Next.js build output
+#############################################
+.next/
+frontend/.next/
+out/
+.turbo/
+next-env.d.ts
+
+#############################################
+# Terraform / IaC
+#############################################
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+*.tfvars
+
+#############################################
+# Docker / Compose
+#############################################
+docker-compose.override.yml
+.docker/
+
+#############################################
+# Docs build output (optional)
+#############################################
+docs/_build/
+site/
+
+#############################################
+# Video & HLS Assets (avoid large binaries)
+#############################################
+# NOTE: do NOT add "*.ts" here — it collides with TypeScript source files.
+# This pipeline produces fMP4 (.m4s) CMAF segments, not MPEG-TS (.ts).
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.m4s
+*.m3u8
+*.mpd
+!frontend/public/**/*.m3u8
+
+#############################################
+# Logs / Runtime
+#############################################
+*.log
+logs/
+*.pid
+*.pid.lock
+tmp/
+temp/
+
+#############################################
+# IDE / Editors
+#############################################
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+#############################################
+# OS Files
+#############################################
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+#############################################
+# Observability / Local Volumes
+#############################################
+grafana_data/
+prometheus_data/
+localstack_data/
+floci-data/
+
+#############################################
+# Security Scan Output
+#############################################
+trivy-results.json
+gitleaks-report.json
+frontend/tsconfig.tsbuildinfo

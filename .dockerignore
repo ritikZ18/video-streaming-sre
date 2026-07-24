@@ -1,0 +1,55 @@
+.git
+.gitignore
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Node / Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+package-lock.json
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Project docs & meta (not needed in images)
+docs/
+chaos/
+tests/
+*.md
+LICENSE
+Makefile
+docker-compose*.yml
+infra/
+.terraform/
+*.tfstate
+*.tfstate.*
+

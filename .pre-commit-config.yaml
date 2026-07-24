@@ -1,0 +1,66 @@
+repos:
+  # --- Security: secrets detection ---
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+
+  # --- Python linting & formatting (ruff) ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # --- Dockerfile linting (hadolint) ---
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+
+  # --- Generic hygiene checks ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  # --- Type checking (mypy) for Python services ---
+  - repo: local
+    hooks:
+      - id: mypy-backend
+        name: mypy-backend
+        entry: mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        args:
+          - services/upload-api/app
+          - services/transcode-worker/app
+          - services/beacon-collector/app
+
+  # --- Frontend linting (ESLint + Prettier) ---
+  - repo: local
+    hooks:
+      - id: frontend-eslint
+        name: frontend-eslint
+        entry: npm
+        language: system
+        pass_filenames: false
+        args: ["--prefix", "frontend", "run", "lint"]
+        stages: [commit]
+      - id: frontend-prettier
+        name: frontend-prettier
+        entry: npm
+        language: system
+        pass_filenames: false
+        args: ["--prefix", "frontend", "run", "format"]
+        stages: [commit]
+

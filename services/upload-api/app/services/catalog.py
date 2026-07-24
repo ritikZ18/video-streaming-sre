@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+import boto3
+from app.config import get_settings
+from app.models.schemas import Movie
+from botocore.client import BaseClient
+from botocore.exceptions import ClientError
+
+
+def _resource():
+    settings = get_settings()
+    return boto3.resource(
+        "dynamodb",
+        region_name=settings.aws_region,
+        endpoint_url=settings.dynamodb_endpoint_url,
+    )
+
+
+def _table():
+    return _resource().Table(get_settings().dynamodb_table)
+
+
+def _ensure_table() -> None:
+    """Create the catalog table on demand (parity with lazy S3/SQS creation)."""
+    settings = get_settings()
+    resource = _resource()
+    client: BaseClient = resource.meta.client
+    try:
+        client.describe_table(TableName=settings.dynamodb_table)
+        return
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+    resource.create_table(
+        TableName=settings.dynamodb_table,
+        KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    client.get_waiter("table_exists").wait(TableName=settings.dynamodb_table)
+
+
+def _to_item(movie: Movie) -> dict[str, Any]:
+    item = movie.model_dump()
+    item["created_at"] = movie.created_at.isoformat()
+    # DynamoDB rejects None; drop null attributes.
+    return {k: v for k, v in item.items() if v is not None}
+
+
+def _decimalize(obj: Any) -> Any:
+    """Recursively convert DynamoDB Decimals to int/float (incl. nested media_info)."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, list):
+        return [_decimalize(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _decimalize(v) for k, v in obj.items()}
+    return obj
+
+
+def _to_movie(item: dict[str, Any]) -> Movie:
+    return Movie(**_decimalize(dict(item)))
+
+
+def save(movie: Movie) -> None:
+    try:
+        _table().put_item(Item=_to_item(movie))
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+            _ensure_table()
+            _table().put_item(Item=_to_item(movie))
+            return
+        raise
+
+
+def list_all() -> list[Movie]:
+    try:
+        response = _table().scan()
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+            _ensure_table()
+            return []
+        raise
+    items = response.get("Items", [])
+    movies = [_to_movie(i) for i in items]
+    # Newest first.
+    movies.sort(key=lambda m: m.created_at, reverse=True)
+    return movies
+
+
+def get(movie_id: str) -> Movie | None:
+    item = _table().get_item(Key={"id": movie_id}).get("Item")
+    return _to_movie(item) if item else None
+
+
+def request_cancel(movie_id: str) -> None:
+    """Flag a processing job for cooperative cancellation. The worker polls this
+    flag (cancel_requested) and aborts + cleans up when it sees it."""
+    _table().update_item(
+        Key={"id": movie_id},
+        UpdateExpression="SET cancel_requested = :c",
+        ExpressionAttributeValues={":c": True},
+        ConditionExpression="attribute_exists(id)",
+    )
+
+
+def mark_ready(movie_id: str, manifest_url: str, dash_url: str) -> None:
+    """Flip a processing entry to ready and attach its manifest URLs."""
+    _table().update_item(
+        Key={"id": movie_id},
+        UpdateExpression="SET #s = :s, manifest_url = :m, dash_url = :d",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":s": "ready",
+            ":m": manifest_url,
+            ":d": dash_url,
+        },
+    )
+
+
+# Convenience for building a processing entry at upload time.
+def new_processing_movie(**fields: Any) -> Movie:
+    fields.setdefault("created_at", datetime.now(tz=timezone.utc))
+    return Movie(status="processing", **fields)
