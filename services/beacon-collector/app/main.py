@@ -2,14 +2,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from app.config import get_settings
 from app.metrics.registry import metrics_endpoint
 from app.routes import beacon, health
 
 
 def create_app() -> FastAPI:
-    settings = get_settings()
-
     app = FastAPI(
         title="StreamSRE Beacon Collector",
         version="1.0.0",
@@ -28,5 +25,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
 

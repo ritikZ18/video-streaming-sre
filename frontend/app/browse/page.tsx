@@ -57,7 +57,7 @@ export default function BrowsePage() {
 
   return (
     <div className="min-h-screen bg-black text-white">
-      <Navbar onAddMovieClick={() => {}} />
+      <Navbar />
       <main className="px-8 pt-24 pb-16">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -110,4 +110,3 @@ export default function BrowsePage() {
     </div>
   );
 }
-

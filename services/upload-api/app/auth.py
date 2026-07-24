@@ -7,12 +7,11 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from app.config import get_settings
 
-
 _basic = HTTPBasic()
 
 
 def require_admin(
-    credentials: HTTPBasicCredentials = Depends(_basic),
+    credentials: HTTPBasicCredentials = Depends(_basic),  # noqa: B008
 ) -> str:
     """Gate write endpoints behind admin HTTP Basic credentials.
 

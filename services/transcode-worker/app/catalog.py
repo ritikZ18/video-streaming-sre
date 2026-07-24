@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import boto3
+import structlog
+from app.config import get_settings
 from botocore.exceptions import ClientError
 
-from app.config import get_settings
+logger = structlog.get_logger()
 
 
 def _resource():
@@ -97,8 +99,8 @@ def delete_row(movie_id: str) -> None:
     """Remove a catalog row (used after a cancellation so it leaves the grid)."""
     try:
         _table().delete_item(Key={"id": movie_id})
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("catalog_delete_failed", movie_id=movie_id, error=str(exc))
 
 
 def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
@@ -117,8 +119,8 @@ def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
-    except Exception:  # noqa: BLE001 - progress is non-critical
-        pass
+    except Exception as exc:  # noqa: BLE001 - progress is non-critical
+        logger.warning("catalog_progress_update_failed", movie_id=movie_id, error=str(exc))
 
 
 def mark_ready(
@@ -137,13 +139,13 @@ def mark_ready(
     The movie id equals the job id (see upload-api), so a completed transcode
     maps directly onto its catalog row.
     """
-    kw = dict(
-        duration=duration,
-        thumbnail_url=thumbnail_url,
-        audio_tracks=audio_tracks,
-        subtitle_tracks=subtitle_tracks,
-        media_info=media_info,
-    )
+    kw = {
+        "duration": duration,
+        "thumbnail_url": thumbnail_url,
+        "audio_tracks": audio_tracks,
+        "subtitle_tracks": subtitle_tracks,
+        "media_info": media_info,
+    }
     try:
         _update(movie_id, manifest_url, dash_url, **kw)
     except ClientError as exc:

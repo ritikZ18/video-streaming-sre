@@ -3,11 +3,10 @@ from __future__ import annotations
 from typing import BinaryIO
 
 import boto3
+from app.config import get_settings
 from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException, status
-
-from app.config import get_settings
 
 
 def _client() -> BaseClient:

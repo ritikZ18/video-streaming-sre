@@ -5,11 +5,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 import boto3
+from app.config import get_settings
 from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException, status
-
-from app.config import get_settings
 
 
 def _client() -> BaseClient:

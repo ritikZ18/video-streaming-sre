@@ -3,13 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from time import monotonic
-from typing import DefaultDict
 
+from app.config import get_settings
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
-
-from app.config import get_settings
 
 
 @dataclass
@@ -26,7 +24,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     settings = get_settings()
     self.capacity = float(settings.rate_limit_per_minute)
     self.refill_rate = self.capacity / 60.0  # tokens per second
-    self.buckets: DefaultDict[str, Bucket] = defaultdict(
+    self.buckets: defaultdict[str, Bucket] = defaultdict(
       lambda: Bucket(tokens=self.capacity, last_refill=monotonic()),
     )
 

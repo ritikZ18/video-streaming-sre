@@ -6,24 +6,19 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import boto3
 import structlog
-from boto3.s3.transfer import TransferConfig
-from botocore.client import BaseClient
-from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
-
+from app import catalog
 from app.config import get_settings
 from app.metrics import (
     QUEUE_DEPTH,
     SEGMENTS_UPLOADED,
-    TRANSCODE_JOBS_TOTAL,
     TRANSCODE_JOB_DURATION,
+    TRANSCODE_JOBS_TOTAL,
     start_metrics_server,
 )
-from app import catalog
 from app.profiles import PROFILES
 from app.transcoder import (
     JobCancelled,
@@ -35,14 +30,17 @@ from app.transcoder import (
     probe_duration,
     probe_media,
 )
-
+from boto3.s3.transfer import TransferConfig
+from botocore.client import BaseClient
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 logger = structlog.get_logger("transcode-worker")
 
 
 def _format_duration(seconds: float) -> str:
     """Render seconds as a human label, e.g. 3720 -> '1h 2m'."""
-    total = int(round(seconds))
+    total = round(seconds)
     hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
     if hours:
@@ -98,7 +96,7 @@ def _s3() -> BaseClient:
     return session.client("s3", endpoint_url=settings.s3_endpoint_url, config=_BOTO_CONFIG)
 
 
-def _poll_queue() -> Dict[str, Any] | None:
+def _poll_queue() -> dict[str, Any] | None:
     settings = get_settings()
     if not settings.sqs_transcode_queue_url:
         logger.warning("sqs_transcode_queue_url_not_configured")
@@ -170,7 +168,7 @@ def _upload_directory(bucket: str, prefix: str, directory: Path) -> int:
 def _make_cancel_checker(job_id: str):
     """A cheap should_cancel() the encoder can poll every progress line, while
     the underlying DynamoDB read happens at most once every few seconds."""
-    state: Dict[str, Any] = {"t": 0.0, "cancelled": False}
+    state: dict[str, Any] = {"t": 0.0, "cancelled": False}
 
     def check() -> bool:
         if state["cancelled"]:
@@ -209,7 +207,7 @@ def _cleanup_canceled(job_id: str, s3_key: str) -> None:
     _delete_prefix(settings.s3_segments_bucket, job_id)
 
 
-def _drop_poison_message(message: Dict[str, Any], receipt_handle: str, receives: int) -> None:
+def _drop_poison_message(message: dict[str, Any], receipt_handle: str, receives: int) -> None:
     """A job that keeps failing (e.g. an unreadable source) is dropped: log it,
     remove its catalog row so it leaves the grid, and delete the SQS message so
     it stops re-driving the queue."""
@@ -225,7 +223,7 @@ def _drop_poison_message(message: Dict[str, Any], receipt_handle: str, receives:
     _delete_message(receipt_handle)
 
 
-def process_message(message: Dict[str, Any]) -> None:
+def process_message(message: dict[str, Any]) -> None:
     """Process a single SQS message containing a transcode job."""
     settings = get_settings()
     body = json.loads(message["Body"])
@@ -251,7 +249,7 @@ def process_message(message: Dict[str, Any]) -> None:
         base = f"{settings.origin_base_url}/hls/{job_id}"
 
         # Throttled catalog writer: overall progress % + current stage label.
-        pstate: Dict[str, Any] = {"t": 0.0, "pct": -1, "stage": None}
+        pstate: dict[str, Any] = {"t": 0.0, "pct": -1, "stage": None}
 
         def _emit(pct: int, stage: str) -> None:
             now = time.monotonic()
@@ -359,7 +357,7 @@ def process_message(message: Dict[str, Any]) -> None:
         logger.info("job_canceled", job_id=job_id)
         _cleanup_canceled(job_id, s3_key)
         return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()
         logger.exception("job_failed", job_id=job_id, error=str(exc))
         raise
@@ -392,11 +390,10 @@ def main() -> None:
         except (BotoCoreError, ClientError) as exc:  # pragma: no cover - network
             logger.exception("aws_error", error=str(exc))
             time.sleep(5)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("worker_error", error=str(exc))
             time.sleep(2)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual run
     main()
-

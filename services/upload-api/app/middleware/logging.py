@@ -7,7 +7,6 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-
 logger = structlog.get_logger("upload-api")
 
 
@@ -22,7 +21,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:
             duration_ms = (monotonic() - start) * 1000
             logger.exception(
                 "request_failed",
@@ -31,7 +30,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 client_ip=client_host,
                 duration_ms=duration_ms,
             )
-            raise exc
+            raise
 
         duration_ms = (monotonic() - start) * 1000
         logger.info(
@@ -60,5 +59,3 @@ def configure_structlog() -> None:
         wrapper_class=structlog.make_filtering_bound_logger(20),
         cache_logger_on_first_use=True,
     )
-
-

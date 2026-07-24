@@ -11,7 +11,6 @@ from app.models.schemas import Movie, UploadResponse
 from app.services import catalog, queue, s3
 from app.utils.validators import validate_extension, validate_magic_bytes, validate_size
 
-
 router = APIRouter(prefix="/api/v1", tags=["upload"])
 
 
@@ -21,7 +20,7 @@ router = APIRouter(prefix="/api/v1", tags=["upload"])
     response_model=UploadResponse,
 )
 async def upload_video(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008
     title: str | None = Form(default=None),
     genre: str | None = Form(default=None),
     year: int | None = Form(default=None),

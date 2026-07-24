@@ -4,7 +4,6 @@ from app.auth import require_admin
 from app.models.schemas import JobStatusResponse
 from app.services import catalog
 
-
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 

@@ -1,17 +1,15 @@
-from fastapi import APIRouter, status
-
 from app.metrics.qoe import (
     QOE_BITRATE_SWITCHES,
     QOE_ERRORS,
     QOE_REBUFFER_DURATION,
     QOE_REBUFFER_EVENTS,
+    QOE_SESSION_HEARTBEATS,
     QOE_SESSIONS_NO_REBUFFER,
     QOE_SESSIONS_TOTAL,
-    QOE_SESSION_HEARTBEATS,
     QOE_STARTUP,
 )
 from app.models.beacon_schema import BeaconBatch
-
+from fastapi import APIRouter, status
 
 router = APIRouter(prefix="/api/v1/beacon", tags=["beacon"])
 

@@ -61,7 +61,7 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-black text-white">
-      <Navbar onAddMovieClick={() => {}} />
+      <Navbar />
       <main className="relative z-0">
         <HeroCarousel movies={movies.filter((m) => m.tag === "Trending" || m.tag === "New Release")} onMoreInfo={setSelectedMovie} onPlay={playMovie} />
         <section className="px-8 pb-16">
@@ -89,4 +89,3 @@ export default function HomePage() {
     </div>
   );
 }
-

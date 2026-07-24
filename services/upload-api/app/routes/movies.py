@@ -9,7 +9,6 @@ from app.auth import require_admin
 from app.models.schemas import Movie, MovieCreate, MovieList
 from app.services import catalog
 
-
 router = APIRouter(prefix="/api/v1/movies", tags=["movies"])
 
 

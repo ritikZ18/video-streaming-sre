@@ -3,7 +3,6 @@ from fastapi import APIRouter
 from app.config import get_settings
 from app.services import s3
 
-
 router = APIRouter()
 
 

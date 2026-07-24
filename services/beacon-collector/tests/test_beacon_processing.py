@@ -1,8 +1,7 @@
 from datetime import datetime, timezone
 
-from fastapi.testclient import TestClient
-
 from app.main import create_app
+from fastapi.testclient import TestClient
 
 
 def test_beacon_accepts_batch_and_updates_metrics() -> None:

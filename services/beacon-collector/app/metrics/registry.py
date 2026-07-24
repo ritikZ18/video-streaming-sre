@@ -1,7 +1,6 @@
 from prometheus_client import CollectorRegistry, generate_latest
-from starlette.responses import PlainTextResponse
 from starlette.requests import Request
-
+from starlette.responses import PlainTextResponse
 
 registry = CollectorRegistry()
 

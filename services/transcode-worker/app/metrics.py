@@ -1,6 +1,5 @@
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
-
 TRANSCODE_JOBS_TOTAL = Counter(
     "transcode_jobs_total",
     "Total transcode jobs processed",

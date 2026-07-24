@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 import boto3
-from botocore.client import BaseClient
-from botocore.exceptions import ClientError
-
 from app.config import get_settings
 from app.models.schemas import Movie
+from botocore.client import BaseClient
+from botocore.exceptions import ClientError
 
 
 def _resource():
@@ -125,5 +124,5 @@ def mark_ready(movie_id: str, manifest_url: str, dash_url: str) -> None:
 
 # Convenience for building a processing entry at upload time.
 def new_processing_movie(**fields: Any) -> Movie:
-    fields.setdefault("created_at", datetime.now())
+    fields.setdefault("created_at", datetime.now(tz=timezone.utc))
     return Movie(status="processing", **fields)

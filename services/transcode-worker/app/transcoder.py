@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any
 
 import structlog
-
 from app.config import get_settings
-from app.profiles import EncodingProfile, PROFILES
+from app.profiles import PROFILES, EncodingProfile
 
 logger = structlog.get_logger()
 
@@ -55,7 +55,7 @@ def has_audio_stream(input_path: Path) -> bool:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
          "stream=index", "-of", "csv=p=0", str(input_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     return bool(result.stdout.strip())
 
@@ -65,7 +65,7 @@ def probe_duration(input_path: Path) -> float | None:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(input_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     try:
         return float(result.stdout.strip())
@@ -78,24 +78,24 @@ def extract_thumbnail(input_path: Path, output_path: Path, at_seconds: float = 3
     result = subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(at_seconds), "-i", str(input_path),
          "-frames:v", "1", "-vf", "scale=640:-2", str(output_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     return result.returncode == 0 and output_path.exists()
 
 
-def probe_media(input_path: Path) -> Dict[str, Any]:
+def probe_media(input_path: Path) -> dict[str, Any]:
     """Full ffprobe (the 'VLC' metadata): video + audio tracks + subtitle tracks."""
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json",
          "-show_format", "-show_streams", str(input_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     try:
         data = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         data = {}
 
-    info: Dict[str, Any] = {"video": None, "audio": [], "subtitles": []}
+    info: dict[str, Any] = {"video": None, "audio": [], "subtitles": []}
     for s in data.get("streams", []):
         ctype = s.get("codec_type")
         tags = s.get("tags", {}) or {}
@@ -137,7 +137,7 @@ def encode_audio(input_path: Path, output_path: Path, stream_index: int) -> Path
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
         "-movflags", "+faststart", str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"audio encode failed: {result.stderr}")
     return output_path
@@ -149,15 +149,15 @@ def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: i
         "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(input_path),
         "-map", f"0:{stream_index}", "-c:s", "webvtt", str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
 
 
 def extract_subtitles_batch(
     input_path: Path,
-    specs: List[Dict[str, Any]],
+    specs: list[dict[str, Any]],
     subs_dir: Path,
-) -> List[tuple[Dict[str, Any], Path]]:
+) -> list[tuple[dict[str, Any], Path]]:
     """Extract many text subtitle streams to WebVTT in ONE demux pass.
 
     specs: subtitle dicts (from probe_media) with stream_index/language/index.
@@ -170,12 +170,12 @@ def extract_subtitles_batch(
         return []
     subs_dir.mkdir(exist_ok=True)
     cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(input_path)]
-    planned: List[tuple[Dict[str, Any], Path]] = []
+    planned: list[tuple[dict[str, Any], Path]] = []
     for s in text_specs:
         vtt = subs_dir / f"{s['language']}_{s['index']}.vtt"
         cmd += ["-map", f"0:{s['stream_index']}", "-c:s", "webvtt", str(vtt)]
         planned.append((s, vtt))
-    subprocess.run(cmd, capture_output=True, text=True)
+    subprocess.run(cmd, capture_output=True, text=True, check=False)
     good = [(s, vtt) for s, vtt in planned if vtt.exists() and vtt.stat().st_size > 0]
     if not good:
         # Single-pass produced nothing (one bad stream can abort ffmpeg); fall
@@ -187,7 +187,7 @@ def extract_subtitles_batch(
 
 
 def _run_ffmpeg_progress(
-    cmd: List[str],
+    cmd: list[str],
     total: float,
     on_progress: ProgressCb | None,
     should_cancel: CancelCb | None = None,
@@ -227,7 +227,7 @@ def build_rendition_command(
     profile: EncodingProfile,
     include_audio: bool,
     use_nvenc: bool | None = None,
-) -> List[str]:
+) -> list[str]:
     """ffmpeg command to encode ONE rendition to an MP4 (with per-rendition progress).
 
     Uses NVENC + CUDA decode when use_nvenc is set (defaults to the USE_NVENC
@@ -237,7 +237,7 @@ def build_rendition_command(
     settings = get_settings()
     if use_nvenc is None:
         use_nvenc = settings.use_nvenc
-    cmd: List[str] = [
+    cmd: list[str] = [
         "ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error",
     ]
     if use_nvenc:
@@ -315,9 +315,9 @@ def encode_rendition(
 
 def build_ladder_command(
     input_path: Path,
-    outputs: List[tuple[EncodingProfile, Path]],
+    outputs: list[tuple[EncodingProfile, Path]],
     use_nvenc: bool,
-) -> List[str]:
+) -> list[str]:
     """Single-pass command: decode the source ONCE and emit every rendition.
 
     GPU path (use_nvenc): NVDEC decode -> keep frames on the GPU
@@ -329,13 +329,13 @@ def build_ladder_command(
     """
     settings = get_settings()
     n = len(outputs)
-    cmd: List[str] = ["ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error"]
+    cmd: list[str] = ["ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error"]
     if use_nvenc:
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
     cmd += ["-i", str(input_path)]
 
     split = f"[0:v]split={n}" + "".join(f"[s{i}]" for i in range(n))
-    chains: List[str] = []
+    chains: list[str] = []
     for i, (prof, _) in enumerate(outputs):
         if use_nvenc:
             chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format=yuv420p[v{i}]")
@@ -363,7 +363,7 @@ def encode_ladder(
     total_seconds: float,
     on_progress: ProgressCb | None = None,
     should_cancel: CancelCb | None = None,
-) -> List[Path]:
+) -> list[Path]:
     """Encode ALL renditions in a single decode pass; return output paths in
     PROFILES order. Tries the GPU ladder first (when NVENC is on) and falls back
     to a single-pass CPU ladder if the GPU path fails."""
@@ -386,13 +386,13 @@ def encode_ladder(
     return [outp for _, outp in outputs]
 
 
-def _label_hls_audio(master_path: Path, audio_tracks: List[Dict[str, Any]]) -> None:
+def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> None:
     """ffmpeg names HLS audio 'audio_N' with no language; rewrite to LANGUAGE/NAME."""
     import re
 
     lines = master_path.read_text(encoding="utf-8").splitlines()
     ai = 0
-    out: List[str] = []
+    out: list[str] = []
     for line in lines:
         if line.startswith("#EXT-X-MEDIA:") and "TYPE=AUDIO" in line and ai < len(audio_tracks):
             t = audio_tracks[ai]
@@ -405,17 +405,17 @@ def _label_hls_audio(master_path: Path, audio_tracks: List[Dict[str, Any]]) -> N
 
 
 def package_cmaf(
-    video_paths: List[Path],
-    audio_tracks: List[Dict[str, Any]],
+    video_paths: list[Path],
+    audio_tracks: list[dict[str, Any]],
     work_dir: Path,
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     """Stream-copy the video renditions + per-language audio MP4s into ONE CMAF
     set: master.m3u8 + manifest.mpd. No re-encode (``-c copy``), so it's fast.
 
     ``audio_tracks`` is a list of {"path", "language", "label"} — each becomes a
     selectable audio rendition / DASH adaptation set.
     """
-    cmd: List[str] = ["ffmpeg", "-y", "-loglevel", "error"]
+    cmd: list[str] = ["ffmpeg", "-y", "-loglevel", "error"]
     for p in video_paths:
         cmd += ["-i", str(p)]
     for a in audio_tracks:
@@ -444,7 +444,7 @@ def package_cmaf(
         str(work_dir / DASH_MANIFEST),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"packaging failed: {result.stderr}")
 

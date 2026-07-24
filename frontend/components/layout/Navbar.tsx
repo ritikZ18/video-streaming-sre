@@ -4,17 +4,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { Lock, Play } from "lucide-react";
 import { SearchBar } from "../common/SearchBar";
 
-type NavbarProps = {
-  onAddMovieClick?: () => void;
-};
-
 const NAV_ITEMS = [
   { label: "Home", href: "/" },
   { label: "Browse", href: "/browse" },
   { label: "SRE", href: "/sre" },
 ] as const;
 
-export function Navbar({ onAddMovieClick }: NavbarProps) {
+export function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -66,4 +62,3 @@ export function Navbar({ onAddMovieClick }: NavbarProps) {
     </nav>
   );
 }
-

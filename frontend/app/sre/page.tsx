@@ -49,7 +49,7 @@ export default function SreDashboardPage() {
 
   return (
     <div className="min-h-screen bg-black text-white">
-      <Navbar onAddMovieClick={() => {}} />
+      <Navbar />
       <main className="px-8 pt-24 pb-16 space-y-10">
         <section>
           <h1 className="text-2xl font-bold tracking-tight">
@@ -112,4 +112,3 @@ export default function SreDashboardPage() {
     </div>
   );
 }
-

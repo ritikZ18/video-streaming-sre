@@ -1,11 +1,10 @@
+from collections.abc import Callable
 from time import monotonic
-from typing import Callable
 
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
-
 
 REQUEST_COUNT = Counter(
     "upload_api_http_requests_total",
