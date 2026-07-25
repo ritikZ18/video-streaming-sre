@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Check, Loader2, Play, Trash2 } from "lucide-react";
-import { getJobStatus, uploadVideo, MAX_UPLOAD_MB } from "../../lib/api";
+import { getJobStatus, listMovies, uploadVideo, MAX_UPLOAD_MB } from "../../lib/api";
 import { parseMediaFilename } from "../../lib/mediaName";
+import { titleKey } from "../../lib/catalog";
 import type { Genre, Rating, Tag } from "../../lib/types";
 
 type ItemStatus = "queued" | "uploading" | "transcoding" | "ready" | "error";
@@ -55,6 +56,8 @@ const STAGE_LABEL: Record<string, string> = {
   "360p": "Encoding 360p",
   "720p": "Encoding 720p",
   "1080p": "Encoding 1080p",
+  "1440p": "Encoding 1440p",
+  "2160p": "Encoding 4K",
   package: "Packaging HLS+DASH",
   subtitles: "Subtitles",
   thumbnail: "Thumbnail",
@@ -78,6 +81,16 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
   }, []);
 
+  // Titles already in the catalog — used to skip duplicate uploads.
+  const existingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    listMovies()
+      .then((ms) => {
+        existingRef.current = new Set(ms.map((m) => titleKey(m.title)));
+      })
+      .catch(() => {});
+  }, []);
+
   // Sequential driver: upload one file at a time (server transcodes one at a
   // time too). processedRef guards against double-starting regardless of render
   // timing; the loop re-reads the latest queue so files added mid-run are picked up.
@@ -91,6 +104,15 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
         );
         if (!it) break;
         processedRef.current.add(it.id);
+
+        // Skip if a title with the same name is already in the catalog (or was
+        // already uploaded in this batch) — stops duplicates being added.
+        const dupKey = titleKey(it.title);
+        if (existingRef.current.has(dupKey)) {
+          update(it.id, { status: "error", error: "Already in your library — skipped" });
+          continue;
+        }
+        existingRef.current.add(dupKey);
 
         if (it.file.size > MAX_UPLOAD_MB * 1024 * 1024) {
           update(it.id, { status: "error", error: `Too large (max ${MAX_UPLOAD_MB} MB)` });
