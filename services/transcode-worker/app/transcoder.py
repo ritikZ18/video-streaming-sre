@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import structlog
 from app.config import get_settings
-from app.profiles import PROFILES, EncodingProfile
+from app.profiles import PROFILES, EncodingProfile, ladder_for
 
 logger = structlog.get_logger()
 
@@ -361,24 +362,33 @@ def encode_ladder(
     input_path: Path,
     renditions_dir: Path,
     total_seconds: float,
+    source_height: int = 0,
     on_progress: ProgressCb | None = None,
     should_cancel: CancelCb | None = None,
 ) -> list[Path]:
-    """Encode ALL renditions in a single decode pass; return output paths in
-    PROFILES order. Tries the GPU ladder first (when NVENC is on) and falls back
-    to a single-pass CPU ladder if the GPU path fails."""
+    """Encode the rendition ladder in a single decode pass; return output paths.
+    The ladder is chosen by ladder_for(source_height) so a 4K source produces
+    up to 2160p while smaller sources are never upscaled. Tries the GPU ladder
+    first (when NVENC is on) and falls back to a single-pass CPU ladder."""
     settings = get_settings()
-    outputs = [(p, renditions_dir / f"v_{p.name}.mp4") for p in PROFILES]
+    outputs = [(p, renditions_dir / f"v_{p.name}.mp4") for p in ladder_for(source_height)]
     if settings.use_nvenc:
-        try:
-            _run_ffmpeg_progress(
-                build_ladder_command(input_path, outputs, use_nvenc=True),
-                total_seconds, on_progress, should_cancel,
-            )
-            return [outp for _, outp in outputs]
-        except RuntimeError as exc:
-            logger.warning("nvenc_ladder_failed_falling_back_to_cpu", error=str(exc)[:300])
+        # NVENC occasionally fails to initialise on a cold worker / transient
+        # driver state ("GPU sometimes doesn't start"), so retry the GPU path
+        # once (after a short settle) before giving up on it.
+        for attempt in range(2):
+            try:
+                _run_ffmpeg_progress(
+                    build_ladder_command(input_path, outputs, use_nvenc=True),
+                    total_seconds, on_progress, should_cancel,
+                )
+                return [outp for _, outp in outputs]
+            except RuntimeError as exc:
+                logger.warning("nvenc_ladder_failed", attempt=attempt, error=str(exc)[:300])
+                if attempt == 0:
+                    time.sleep(2.0)
 
+    logger.warning("ladder_using_cpu_fallback")
     _run_ffmpeg_progress(
         build_ladder_command(input_path, outputs, use_nvenc=False),
         total_seconds, on_progress, should_cancel,
