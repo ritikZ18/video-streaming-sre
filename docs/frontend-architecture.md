@@ -352,3 +352,46 @@ Ordered by impact-to-effort for *"make it feel more premium / modern"*:
 - Tests: `npm run test` (Vitest + jsdom).
 
 > **Branch note:** this document describes the frontend as merged from `origin/dev` (the complete, buildable app: `lib/` + `tailwind.config.mjs` + all features). The earlier `frontend-appletv` base was missing `lib/` and the Tailwind config and could not build — it has now been fast-forwarded to match.
+
+---
+
+## 15. Catalog sources & how movie IDs are made
+
+The catalog on screen is a **merge of three sources**, each with a distinct, stable `id` scheme:
+
+| Source | Where the id comes from | id shape | Playable? |
+|---|---|---|---|
+| **Uploads** (your videos) | `upload-api` generates `job_id = uuid4()` on upload; **the catalog row id IS the job id** (`services/upload-api/app/routes/upload.py`). The transcode-worker later flips that same row to `ready` by job id. | random UUID, e.g. `6c020302-b314-4dc3-8bdb-e6372f00b6e6` | ✅ yes — has a `manifestUrl` on your origin |
+| **TMDB** (metadata catalog) | `lib/tmdb.ts` maps a TMDB movie to `id = "tmdb-" + tmdbId` | `tmdb-1368337` | ❌ no — `displayOnly: true`, no `manifestUrl` |
+| **Seed** (`data/movies.ts`) | hard-coded (`"1"`…`"6"`), only shown if TMDB is unreachable | small integer strings | ✅ (public HLS test streams) |
+
+So: **the id you see in `/player?id=…` for one of your uploads is the transcode job id / catalog primary key.** One upload → one UUID → one catalog row → one playable title. The merge rule (`app/page.tsx`, `browse`, `library`) always puts **uploads first** so, when ids or titles collide, the playable upload wins over a catalog-only TMDB entry.
+
+TMDB requests never expose the key: the browser calls the **server proxy** `app/api/tmdb/[...path]/route.ts`, which reads `TMDB_API_KEY` from server runtime env (`docker-compose` → `.env`, gitignored) and forwards to `api.themoviedb.org`. The key is not in the client bundle.
+
+## 16. De-duplication — finding it and preventing re-uploads
+
+Two independent layers, both in `lib/catalog.ts` + their call sites.
+
+**The key.** `titleKey(title)` normalizes a title for comparison: lowercase → strip a stray extension → collapse whitespace. Two titles that normalize to the same string are considered the same movie.
+
+**Layer 1 — display de-dup (`dedupeByTitle`).** Home, Browse, and Library run their merged movie list through `dedupeByTitle`, which keeps the **first** occurrence of each `titleKey` and drops the rest. Because callers order the list *uploads-first, newest-first*, the copy that survives is the best one — and the same video can no longer appear under multiple genre rows (the bug where one upload showed under both Sci-Fi and Action).
+
+**Layer 2 — upload prevention (`UploadQueue`).** Before uploading, the queue fetches the existing catalog once and builds `existingRef = titleSet(listMovies())`. In the sequential upload driver, each file is checked:
+```
+dupKey = titleKey(item.title)
+if existingRef.has(dupKey):  → mark "Already in your library — skipped", do NOT upload
+else:                          existingRef.add(dupKey); upload it
+```
+Adding to `existingRef` *before* uploading also collapses duplicates **within the same batch** (dropping the same file twice), and the dropzone already de-dupes identical `File` objects by `name+size+lastModified`. Net effect: **you can't add the same title twice** — not from the catalog, not within one batch.
+
+> Note: de-dup is by **title**, which is deliberately loose (re-encodes/re-cuts with the same name collapse). Existing duplicate *rows* already in the backend are hidden by Layer 1; physically deleting them needs a backend `DELETE /movies/{id}` endpoint (not built yet).
+
+## 17. Adaptive rendition ladder (incl. 4K / 60fps)
+
+Playback quality is only as high as the renditions the worker produced. `services/transcode-worker/app/profiles.py` defines the rungs (360p → 720p → 1080p → 1440p → 2160p) and `ladder_for(source_height)` picks which to encode: **every rung ≤ the source height, never above** (no upscaling), always at least the lowest.
+
+- 4K/60 source → `[360p, 720p, 1080p, 1440p, 2160p]` — so on a fast connection hls.js auto-selects **2160p**.
+- 1080p source → stops at 1080p; 720p → stops at 720p.
+
+Frame rate is preserved (no `fps` filter), so 60fps stays 60fps. The whole ladder is encoded in **one GPU decode pass** (`encode_ladder`), which now **retries NVENC once** on a transient init failure before falling back to CPU — addressing the occasional "GPU didn't start". The player's stats panel reads the live rendition from hls.js (`hls.currentLevel`/`loadLevel`) so **Quality shows `Auto · 2160p`** and Bitrate populates even when `LEVEL_SWITCHED` doesn't fire.
