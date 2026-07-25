@@ -28,8 +28,11 @@ export default function SreDashboardPage() {
       await Promise.all(
         SERVICES.map(async (service) => {
           try {
-            const response = await fetch(service.url);
-            next[service.name] = response.ok ? "up" : "down";
+            // The browser can't read a CORS-less health response's status, so a
+            // normal fetch throws for origin/beacon even when they're up. Use
+            // no-cors and treat a resolved request (server reachable) as "up".
+            await fetch(service.url, { mode: "no-cors", cache: "no-store" });
+            next[service.name] = "up";
           } catch {
             next[service.name] = "down";
           }
