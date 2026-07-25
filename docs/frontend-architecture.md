@@ -394,4 +394,58 @@ Playback quality is only as high as the renditions the worker produced. `service
 - 4K/60 source → `[360p, 720p, 1080p, 1440p, 2160p]` — so on a fast connection hls.js auto-selects **2160p**.
 - 1080p source → stops at 1080p; 720p → stops at 720p.
 
-Frame rate is preserved (no `fps` filter), so 60fps stays 60fps. The whole ladder is encoded in **one GPU decode pass** (`encode_ladder`), which now **retries NVENC once** on a transient init failure before falling back to CPU — addressing the occasional "GPU didn't start". The player's stats panel reads the live rendition from hls.js (`hls.currentLevel`/`loadLevel`) so **Quality shows `Auto · 2160p`** and Bitrate populates even when `LEVEL_SWITCHED` doesn't fire.
+Frame rate is preserved (no `fps` filter), so 60fps stays 60fps. The whole ladder is encoded in **one GPU decode pass** (`encode_ladder`), which now **retries NVENC once** on a transient init failure before falling back to CPU — addressing the occasional "GPU didn't start".
+
+> **Existing uploads are capped by whatever ladder was live when they were encoded.** A 4K file transcoded before this change only has segments up to 1080p — the higher rungs don't exist, so the player can't select them. Re-transcode (or re-upload) a title to regenerate the 2160p ladder.
+
+**The stats panel's `Auto · 1080p`** reads the on-screen resolution from the `<video>` element's own `videoHeight` (the decoded frame height) — ground truth that stays correct even if hls.js's `LEVEL_SWITCHED` is missed or `currentLevel`/`loadLevel` read `-1`. Bitrate still comes from hls.js (the element can't report it).
+
+## 18. Inspecting the HLS output (segments & playlists)
+
+The worker writes CMAF/fMP4 output to the **`streamsre-hls-segments`** S3 bucket (floci), keyed by `<job_id>/`. The **origin** (Nginx, `:8080`) proxies it at `/hls/<job_id>/…`. Per title you get:
+
+| File | What it is |
+|---|---|
+| `master.m3u8` | the multivariant playlist — lists the rendition ladder (`RESOLUTION=…`, `BANDWIDTH=…`) |
+| `media_0.m3u8` … `media_N.m3u8` | one media playlist per rendition (the `#EXTINF` segment list) |
+| `init-stream0.m4s` … | fMP4 init segment per stream (moov/codec header) |
+| `chunk-stream0-00001.m4s` … | the actual media segments (`chunk-stream<rendition>-<seq>.m4s`) |
+| `manifest.mpd` | the DASH manifest (same segments, DASH packaging) |
+| `thumbnail.jpg` | poster frame |
+
+**List every object for a title** (job id = the movie id in `/player?id=…`):
+```bash
+docker exec streamsre-transcode-worker python -c "
+import boto3,os; s3=boto3.client('s3',endpoint_url=os.environ['S3_ENDPOINT_URL'],
+aws_access_key_id='test',aws_secret_access_key='test',region_name='us-east-1')
+for o in s3.list_objects_v2(Bucket='streamsre-hls-segments',Prefix='<JOB_ID>/')['Contents']:
+    print(o['Size'], o['Key'])"
+```
+
+**Read the master playlist** (see the ladder a title actually has):
+```bash
+curl -s http://localhost:8080/hls/<JOB_ID>/master.m3u8
+```
+
+**Play it straight from the origin** — no browser, no frontend:
+```bash
+ffplay http://localhost:8080/hls/<JOB_ID>/master.m3u8     # or open the URL in VLC
+```
+
+**Find the job id / manifest for a title** (scan the DynamoDB catalog):
+```bash
+docker exec streamsre-transcode-worker python -c "
+import boto3,os; db=boto3.client('dynamodb',endpoint_url=os.environ['DYNAMODB_ENDPOINT_URL'],
+aws_access_key_id='test',aws_secret_access_key='test',region_name='us-east-1')
+for it in db.scan(TableName='streamsre-catalog')['Items']:
+    g=lambda k: list(it.get(k,{}).values())[0] if k in it else ''
+    print(g('id'), g('status'), g('title'), g('manifest_url'))"
+```
+
+> Raw source uploads live in the separate **`streamsre-raw-uploads`** bucket under `<job_id>/<original-filename>`. floci is in-memory — everything above is gone after a floci restart.
+
+## 19. Letterboxed sources & the IMAX / fill button
+
+Cinematic trailers usually **bake a ~2.39:1 letterbox into a 16:9 frame** — the black bars are pixels in the video, not player layout (`cropdetect` on our Godzilla trailer reports the picture is only `1920×796` inside a `1920×1080` frame). Because the frame is already 16:9, `object-fit: cover` on a 16:9 screen can't remove those bars.
+
+The **IMAX** button (`VideoPlayer.tsx`) instead enters fullscreen and applies a CSS `transform: scale(1.35)` (`IMAX_ZOOM`) to the video, zooming until the baked bars are pushed past the container's `overflow: hidden` edge. The result fills the screen edge-to-edge, cropping a little off the sides — exactly like VLC's *fill/crop*. It's an explicit opt-in: on a genuinely full-frame 16:9 source it would over-zoom, which is the accepted trade for "no black bars". (A future refinement is to run `cropdetect` at transcode time and store the true content aspect so the zoom can be exact per title.)

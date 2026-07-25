@@ -48,6 +48,12 @@ const menuAnim = {
   transition: { duration: 0.14 },
 };
 
+// Cinematic trailers bake a ~2.39:1 letterbox INTO the 16:9 frame, so object-fit
+// can't remove those bars (the frame IS 16:9). IMAX/fill zooms the picture until the
+// baked bars are cropped off-screen — 1080/800 ≈ 1.35 fills a standard 2.39:1 image.
+// Trades a little left/right crop for an edge-to-edge screen, exactly like VLC's fill.
+const IMAX_ZOOM = 1.35;
+
 export function VideoPlayer({
   src,
   poster,
@@ -263,14 +269,17 @@ export function VideoPlayer({
       setCurrent(v.currentTime);
       if (Number.isFinite(v.duration) && v.duration > 0) setDuration(v.duration);
       if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
-      // Derive the live rendition from hls.js directly — LEVEL_SWITCHED can be
-      // missed, which left Quality at "Auto" and Bitrate blank.
+      // Ground truth for the on-screen resolution: the <video> element's own
+      // decoded frame height. This is what makes "Auto · 1080p" reliable even
+      // when hls.js LEVEL_SWITCHED is missed or currentLevel/loadLevel read -1.
+      if (v.videoHeight) setPlayingHeight(v.videoHeight);
+      // Bitrate still comes from hls.js (the element can't report it).
       const hls = hlsRef.current;
       if (hls) {
         const idx = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
         const lvl = hls.levels?.[idx];
         if (lvl) {
-          if (lvl.height) setPlayingHeight(lvl.height);
+          if (!v.videoHeight && lvl.height) setPlayingHeight(lvl.height);
           if (lvl.bitrate) setBitrateKbps(Math.round(lvl.bitrate / 1000));
         }
       }
@@ -418,9 +427,7 @@ export function VideoPlayer({
       onMouseMove={nudge}
       onMouseLeave={() => !videoRef.current?.paused && !menu && setShowControls(false)}
       className={`group relative w-full select-none overflow-hidden bg-black ${
-        fullscreen
-          ? "flex h-full items-center justify-center" // fill the whole screen — no 16:9 box, so IMAX can crop-fill edge to edge
-          : "aspect-video rounded-2xl ring-1 ring-white/10"
+        fullscreen ? "h-full" : "aspect-video rounded-2xl ring-1 ring-white/10"
       }`}
     >
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -430,7 +437,8 @@ export function VideoPlayer({
         poster={poster ?? undefined}
         crossOrigin="anonymous"
         preload="auto"
-        className={`h-full w-full bg-black ${imax ? "object-cover" : "object-contain"}`}
+        className={`absolute inset-0 h-full w-full bg-black transition-transform duration-200 ${imax ? "object-cover" : "object-contain"}`}
+        style={imax ? { transform: `scale(${IMAX_ZOOM})` } : undefined}
         playsInline
       >
         {subtitleTracks.map((t) => (
@@ -656,7 +664,7 @@ export function VideoPlayer({
                 }
               }}
               aria-label="IMAX fill mode"
-              title={imax ? "Exit IMAX" : "IMAX — fullscreen, fills the whole screen (crops, never stretches)"}
+              title={imax ? "Exit IMAX" : "IMAX — fullscreen fill: zooms past the cinematic black bars to fill the screen (crops the sides, never stretches)"}
               className={`rounded px-1.5 py-1 text-[11px] font-extrabold tracking-wide hover:bg-white/15 ${imax ? "text-indigo-300" : "text-white/80"}`}
             >
               IMAX
