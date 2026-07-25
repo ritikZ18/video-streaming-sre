@@ -318,27 +318,35 @@ def build_ladder_command(
     input_path: Path,
     outputs: list[tuple[EncodingProfile, Path]],
     use_nvenc: bool,
+    gpu_decode: bool = True,
 ) -> list[str]:
     """Single-pass command: decode the source ONCE and emit every rendition.
 
-    GPU path (use_nvenc): NVDEC decode -> keep frames on the GPU
-    (-hwaccel_output_format cuda) -> split -> scale_cuda per rendition (resize +
-    10-bit->8-bit on the GPU) -> one h264_nvenc encoder per rendition. No CPU
-    scale, and the expensive decode happens once instead of once-per-rendition.
+    Three modes (encoder × decoder):
 
-    CPU fallback: decode once -> split -> libswscale scale per rendition -> libx264.
+    - ``use_nvenc`` + ``gpu_decode`` — **full GPU**: NVDEC decode, frames kept on
+      the GPU (``-hwaccel_output_format cuda``), ``scale_cuda`` per rendition
+      (resize + 10-bit→8-bit on the GPU), one ``h264_nvenc`` per rendition. No CPU
+      scale; the expensive decode happens once, not once-per-rendition.
+    - ``use_nvenc`` + not ``gpu_decode`` — **hybrid**: CPU decode + libswscale
+      scale, but ``h264_nvenc`` encode. For sources this GPU can't NVDEC-decode
+      (e.g. AV1 on a Turing GTX 1650, which has no hardware AV1 decoder), this
+      keeps the expensive ENCODE on the GPU instead of dropping the whole job to
+      CPU.
+    - not ``use_nvenc`` — **full CPU**: decode once → scale per rendition → libx264.
     """
     settings = get_settings()
     n = len(outputs)
+    hw_decode = use_nvenc and gpu_decode
     cmd: list[str] = ["ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error"]
-    if use_nvenc:
+    if hw_decode:
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
     cmd += ["-i", str(input_path)]
 
     split = f"[0:v]split={n}" + "".join(f"[s{i}]" for i in range(n))
     chains: list[str] = []
     for i, (prof, _) in enumerate(outputs):
-        if use_nvenc:
+        if hw_decode:
             chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format=yuv420p[v{i}]")
         else:
             chains.append(f"[s{i}]scale={prof.width}:{prof.height},format=yuv420p[v{i}]")
@@ -373,21 +381,37 @@ def encode_ladder(
     settings = get_settings()
     outputs = [(p, renditions_dir / f"v_{p.name}.mp4") for p in ladder_for(source_height)]
     if settings.use_nvenc:
-        # NVENC occasionally fails to initialise on a cold worker / transient
-        # driver state ("GPU sometimes doesn't start"), so retry the GPU path
-        # once (after a short settle) before giving up on it.
+        # 1) Full GPU (NVDEC decode + NVENC encode). NVENC occasionally fails to
+        # initialise on a cold worker / transient driver state ("GPU sometimes
+        # doesn't start"), so retry once (after a short settle) before giving up.
         for attempt in range(2):
             try:
                 _run_ffmpeg_progress(
-                    build_ladder_command(input_path, outputs, use_nvenc=True),
+                    build_ladder_command(input_path, outputs, use_nvenc=True, gpu_decode=True),
                     total_seconds, on_progress, should_cancel,
                 )
                 return [outp for _, outp in outputs]
             except RuntimeError as exc:
-                logger.warning("nvenc_ladder_failed", attempt=attempt, error=str(exc)[:300])
+                logger.warning("nvenc_gpu_ladder_failed", attempt=attempt, error=str(exc)[:300])
                 if attempt == 0:
                     time.sleep(2.0)
 
+        # 2) Hybrid (CPU decode + NVENC encode). The most common reason the full-GPU
+        # path fails is a source this GPU can't NVDEC-decode — e.g. AV1 on a Turing
+        # GTX 1650 ("your platform doesn't support hardware accelerated AV1
+        # decoding"). Decode on the CPU but keep the expensive ENCODE on the GPU,
+        # rather than abandoning NVENC and going fully CPU.
+        try:
+            logger.warning("nvenc_hybrid_cpu_decode_gpu_encode")
+            _run_ffmpeg_progress(
+                build_ladder_command(input_path, outputs, use_nvenc=True, gpu_decode=False),
+                total_seconds, on_progress, should_cancel,
+            )
+            return [outp for _, outp in outputs]
+        except RuntimeError as exc:
+            logger.warning("nvenc_hybrid_ladder_failed", error=str(exc)[:300])
+
+    # 3) Full CPU (libx264) — last resort when NVENC itself is unavailable.
     logger.warning("ladder_using_cpu_fallback")
     _run_ffmpeg_progress(
         build_ladder_command(input_path, outputs, use_nvenc=False),

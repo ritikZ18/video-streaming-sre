@@ -442,7 +442,7 @@ for it in db.scan(TableName='streamsre-catalog')['Items']:
     print(g('id'), g('status'), g('title'), g('manifest_url'))"
 ```
 
-> Raw source uploads live in the separate **`streamsre-raw-uploads`** bucket under `<job_id>/<original-filename>`. floci is in-memory — everything above is gone after a floci restart.
+> Raw source uploads live in the separate **`streamsre-raw-uploads`** bucket under `<job_id>/<original-filename>`. Objects live in **MinIO** (volume `minio_data`) and the catalog in **dynamodb-local** (volume `dynamo_data`), so both **survive floci restarts** — only the SQS queue is ephemeral. See `docs/infra-floci.md` §0. Browse objects at the MinIO console `http://localhost:9001`.
 
 ## 19. Letterboxed sources & the IMAX / fill button
 

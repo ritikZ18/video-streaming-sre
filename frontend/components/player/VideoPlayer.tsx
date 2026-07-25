@@ -90,6 +90,7 @@ export function VideoPlayer({
   const [startupMs, setStartupMs] = useState<number | null>(null);
   const [playingHeight, setPlayingHeight] = useState(0); // actual rendition height, even in auto
   const [imax, setImax] = useState(false); // fill-screen (object-cover) mode
+  const [imaxZoom, setImaxZoom] = useState(IMAX_ZOOM); // measured per-video + per-screen
 
   const sessionRef = useRef("");
   const eventsRef = useRef<BeaconEvent[]>([]);
@@ -308,6 +309,69 @@ export function VideoPlayer({
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
+  // IMAX fill zoom, measured — not guessed. Cinematic bars are baked into the
+  // pixels, so we draw the current frame to a tiny canvas, scan for the black
+  // bars (top/bottom AND sides), and compute the real content rectangle. Then we
+  // zoom so that rectangle exactly COVERS this screen: from object-contain scale
+  // s = min(bw/fw, bh/fh), Z = max(bw/(cw·s), bh/(ch·s)). Adapts per-video and
+  // per-display (16:9 TV vs 16:10 laptop vs ultrawide) instead of a fixed 1.35.
+  const measureImaxZoom = useCallback(() => {
+    const v = videoRef.current;
+    const box = containerRef.current;
+    if (!v || !box || !v.videoWidth || !v.videoHeight) return;
+    const fw = v.videoWidth;
+    const fh = v.videoHeight;
+    const bw = box.clientWidth;
+    const bh = box.clientHeight;
+    const sw = 240;
+    const sh = Math.max(2, Math.round((sw * fh) / fw));
+    let data: Uint8ClampedArray;
+    try {
+      const cvs = document.createElement("canvas");
+      cvs.width = sw;
+      cvs.height = sh;
+      const ctx = cvs.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(v, 0, 0, sw, sh);
+      data = ctx.getImageData(0, 0, sw, sh).data;
+    } catch {
+      return; // tainted canvas (shouldn't happen: origin sends ACAO) — keep zoom
+    }
+    const T = 18; // near-black luma threshold
+    const lum = (i: number) => 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const rowBlack = (y: number) => {
+      let s = 0, n = 0;
+      for (let x = 0; x < sw; x += 3) { s += lum((y * sw + x) * 4); n++; }
+      return s / n < T;
+    };
+    const colBlack = (x: number) => {
+      let s = 0, n = 0;
+      for (let y = 0; y < sh; y += 3) { s += lum((y * sw + x) * 4); n++; }
+      return s / n < T;
+    };
+    let top = 0; while (top < sh * 0.45 && rowBlack(top)) top++;
+    let bot = sh - 1; while (bot > sh * 0.55 && rowBlack(bot)) bot--;
+    let left = 0; while (left < sw * 0.45 && colBlack(left)) left++;
+    let right = sw - 1; while (right > sw * 0.55 && colBlack(right)) right--;
+    const ch = ((bot - top + 1) / sh) * fh;
+    const cw = ((right - left + 1) / sw) * fw;
+    // Guard: a fade-to-black / very dark frame gives a bogus tiny rect — ignore it.
+    if (ch < fh * 0.3 || cw < fw * 0.3) return;
+    const s = Math.min(bw / fw, bh / fh); // object-contain scale
+    const z = Math.max(bw / (cw * s), bh / (ch * s));
+    setImaxZoom(Math.min(2.6, Math.max(1, z)));
+  }, []);
+
+  // Measure when IMAX turns on, and re-measure if the window/monitor changes
+  // (screenAR changes → the fill zoom changes).
+  useEffect(() => {
+    if (!imax) return;
+    measureImaxZoom();
+    const onResize = () => measureImaxZoom();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [imax, measureImaxZoom]);
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -438,7 +502,7 @@ export function VideoPlayer({
         crossOrigin="anonymous"
         preload="auto"
         className={`absolute inset-0 h-full w-full bg-black transition-transform duration-200 ${imax ? "object-cover" : "object-contain"}`}
-        style={imax ? { transform: `scale(${IMAX_ZOOM})` } : undefined}
+        style={imax ? { transform: `scale(${imaxZoom})` } : undefined}
         playsInline
       >
         {subtitleTracks.map((t) => (
@@ -653,19 +717,27 @@ export function VideoPlayer({
             </button>
             <button
               type="button"
-              onClick={() => {
-                const el = containerRef.current;
-                if (!imax) {
-                  setImax(true);
-                  if (el && !document.fullscreenElement) void el.requestFullscreen().catch(() => {});
-                } else {
-                  setImax(false);
-                  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
-                }
-              }}
+              // IMAX only toggles the zoom-fill; it NEVER changes fullscreen.
+              // Enabled only while in fullscreen, and turning it off keeps you
+              // in fullscreen (leaving fullscreen is what resets imax, via onFs).
+              onClick={() => setImax((v) => !v)}
+              disabled={!fullscreen}
+              aria-pressed={imax}
               aria-label="IMAX fill mode"
-              title={imax ? "Exit IMAX" : "IMAX — fullscreen fill: zooms past the cinematic black bars to fill the screen (crops the sides, never stretches)"}
-              className={`rounded px-1.5 py-1 text-[11px] font-extrabold tracking-wide hover:bg-white/15 ${imax ? "text-indigo-300" : "text-white/80"}`}
+              title={
+                !fullscreen
+                  ? "IMAX is available in fullscreen — enter fullscreen first"
+                  : imax
+                    ? "IMAX on — click to turn off (stays fullscreen)"
+                    : "IMAX — zoom past the cinematic black bars to fill the screen (crops the sides, never stretches)"
+              }
+              className={`rounded px-1.5 py-1 text-[11px] font-extrabold tracking-wide transition-colors ${
+                !fullscreen
+                  ? "cursor-not-allowed text-white/25"
+                  : imax
+                    ? "bg-[#0a4595] text-white shadow-[0_0_10px] shadow-blue-500/50 ring-1 ring-blue-400/60"
+                    : "text-white/80 hover:bg-white/15"
+              }`}
             >
               IMAX
             </button>
