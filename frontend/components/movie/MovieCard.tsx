@@ -21,15 +21,6 @@ export function MovieCard({ movie, onClick, size = "normal" }: MovieCardProps) {
   const reduce = useReducedMotion();
   const isLarge = size === "large";
 
-  // Portrait 2:3 posters (Apple-TV). Landscape thumbnails are cropped to fit.
-  const bg = movie.thumbnailUrl
-    ? {
-        backgroundImage: `url("${movie.thumbnailUrl}")`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }
-    : { backgroundImage: movie.gradient };
-
   // Pointer-tracked specular highlight — set CSS vars directly (no re-render).
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = posterRef.current;
@@ -84,9 +75,23 @@ export function MovieCard({ movie, onClick, size = "normal" }: MovieCardProps) {
         onPointerMove={onPointerMove}
         variants={posterV}
         transition={springy}
-        style={bg}
-        className="relative aspect-[2/3] w-full overflow-hidden rounded-poster bg-surface-1 ring-1 ring-white/[0.06]"
+        style={{ backgroundImage: movie.gradient }}
+        className="relative aspect-[2/3] w-full overflow-hidden rounded-poster bg-surface-1 bg-cover bg-center ring-1 ring-white/[0.06]"
       >
+        {/* Real poster over the gradient fallback; lazy so 500 cards don't all fetch. */}
+        {movie.thumbnailUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={movie.thumbnailUrl}
+            alt=""
+            loading="lazy"
+            className="absolute inset-0 h-full w-full object-cover"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+            }}
+          />
+        )}
+
         {/* Subtle diagonal glass sheen (fades in on focus). */}
         <motion.div
           variants={layerV}

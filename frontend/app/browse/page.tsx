@@ -4,49 +4,65 @@ import { useEffect, useMemo, useState } from "react";
 import { initialMovies } from "../../data/movies";
 import type { Movie } from "../../lib/types";
 import { listMovies } from "../../lib/api";
+import { fetchTmdbCatalog } from "../../lib/tmdb";
+import { dedupeByTitle } from "../../lib/catalog";
 import { Navbar } from "../../components/layout/Navbar";
 import { Footer } from "../../components/layout/Footer";
 import { MovieCard } from "../../components/movie/MovieCard";
+import { MovieDetail } from "../../components/movie/MovieDetail";
 
 const GENRES = ["All", "Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
 
 export default function BrowsePage() {
-  const [movies, setMovies] = useState<Movie[]>(initialMovies);
+  const [uploads, setUploads] = useState<Movie[]>([]);
+  const [catalog, setCatalog] = useState<Movie[]>(initialMovies);
   const [search, setSearch] = useState("");
   const [genre, setGenre] = useState<(typeof GENRES)[number]>("All");
+  const [selected, setSelected] = useState<Movie | null>(null);
 
   useEffect(() => {
     let active = true;
     const load = () => {
       listMovies()
-        .then((real) => {
-          if (!active) return;
-          const realIds = new Set(real.map((m) => m.id));
-          setMovies([...real, ...initialMovies.filter((s) => !realIds.has(s.id))]);
+        .then((r) => {
+          if (active) setUploads(r);
         })
-        .catch(() => {
-          /* Catalog API unreachable — keep the seed catalog. */
-        });
+        .catch(() => {});
     };
     load();
-    const timer = setInterval(load, 5000);
+    const t = setInterval(load, 5000);
     return () => {
       active = false;
-      clearInterval(timer);
+      clearInterval(t);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetchTmdbCatalog(500)
+      .then((l) => {
+        if (active && l.length) setCatalog(l);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
     };
   }, []);
 
   const playMovie = (movie: Movie) => {
     if (!movie.manifestUrl) return;
-    const q = new URLSearchParams({ url: movie.manifestUrl, title: movie.title, id: movie.id });
-    if (movie.thumbnailUrl) q.set("poster", movie.thumbnailUrl);
-    window.location.href = `/player?${q.toString()}`;
+    window.location.href = `/player?id=${encodeURIComponent(movie.id)}`;
   };
 
+  const movies = useMemo(() => {
+    const ids = new Set(uploads.map((m) => m.id));
+    return dedupeByTitle([...uploads, ...catalog.filter((m) => !ids.has(m.id))]);
+  }, [uploads, catalog]);
+
   const filtered = useMemo(() => {
+    const q = search.toLowerCase();
     return movies.filter((movie) => {
       const matchesGenre = genre === "All" || movie.genre === genre;
-      const q = search.toLowerCase();
       const matchesQuery =
         !q ||
         movie.title.toLowerCase().includes(q) ||
@@ -61,9 +77,9 @@ export default function BrowsePage() {
       <main className="px-8 pt-24 pb-16">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
+            <h1 className="text-2xl font-bold tracking-heading">Browse</h1>
             <p className="text-sm text-white/60">
-              Explore the catalog by genre or search by title.
+              {filtered.length} titles · explore by genre or search.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -77,9 +93,7 @@ export default function BrowsePage() {
                     onClick={() => setGenre(g)}
                     className={[
                       "rounded-md px-3 py-1 text-xs font-semibold transition-colors",
-                      active
-                        ? "bg-white text-black"
-                        : "bg-transparent text-white/60 hover:text-white",
+                      active ? "bg-white text-black" : "bg-transparent text-white/60 hover:text-white",
                     ].join(" ")}
                   >
                     {g}
@@ -97,16 +111,14 @@ export default function BrowsePage() {
         </div>
         <section className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] justify-items-center gap-x-4 gap-y-7">
           {filtered.map((movie) => (
-            <MovieCard
-              key={movie.id}
-              movie={movie}
-              onClick={playMovie}
-              size="normal"
-            />
+            <MovieCard key={movie.id} movie={movie} onClick={setSelected} size="normal" />
           ))}
         </section>
       </main>
       <Footer />
+      {selected && (
+        <MovieDetail movie={selected} onClose={() => setSelected(null)} onPlay={playMovie} />
+      )}
     </div>
   );
 }

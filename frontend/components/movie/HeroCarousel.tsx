@@ -46,7 +46,7 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
         >
           <HeroBackdrop
             src={current.manifestUrl}
-            image={current.thumbnailUrl}
+            image={current.backdropUrl ?? current.thumbnailUrl}
             gradient={current.gradient}
           />
           {/* readability scrims — blended to the page base (#0a0a0f) */}

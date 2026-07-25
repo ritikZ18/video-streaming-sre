@@ -1,12 +1,14 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Lock, Play } from "lucide-react";
+import { Lock } from "lucide-react";
 import { SearchBar } from "../common/SearchBar";
+import { Logo } from "./Logo";
 
 const NAV_ITEMS = [
   { label: "Home", href: "/" },
   { label: "Browse", href: "/browse" },
+  { label: "Library", href: "/library" },
   { label: "SRE", href: "/sre" },
 ] as const;
 
@@ -21,13 +23,16 @@ export function Navbar() {
       <div className="flex items-center gap-8">
         <button
           type="button"
-          className="flex items-center gap-2 text-lg font-extrabold tracking-tight"
+          className="flex items-center gap-2.5 text-lg font-bold tracking-heading"
           onClick={() => router.push("/")}
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500">
-            <Play className="h-4 w-4 fill-white text-white" />
+          <Logo size={32} />
+          <span>
+            Stream
+            <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
+              SRE
+            </span>
           </span>
-          <span>StreamSRE</span>
         </button>
         <div className="flex gap-1">
           {NAV_ITEMS.map((item) => {
