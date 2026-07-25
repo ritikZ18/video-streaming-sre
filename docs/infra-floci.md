@@ -7,6 +7,48 @@ real AWS by changing only the endpoint/credentials.
 
 ---
 
+## 0. Storage durability: persistent vs ephemeral (read this first)
+
+floci is **in-memory** — every restart of floci (or the host/Docker) wipes it.
+That is fine for a transient queue, but it also erased uploaded videos and their
+catalog. So the **durable** state is deliberately kept **out of floci**, in
+persistent local services with Docker volumes, and only the throwaway SQS queue
+stays in floci:
+
+| Data | Where it lives now | Persistence | Endpoint (in-container) |
+|---|---|---|---|
+| S3 objects (raw uploads + HLS segments) | **MinIO** (S3-compatible) | ✅ volume `minio_data` | `http://minio:9000` |
+| Movie catalog (metadata + job status) | **dynamodb-local** | ✅ volume `dynamo_data` | `http://dynamodb-local:8000` |
+| Transcode queue + DLQ | **floci** | ❌ in-memory (self-heals) | `http://host.docker.internal:4566` |
+
+Both MinIO and dynamodb-local are ordinary services in this repo's
+`docker-compose.yml`. Consequences:
+
+- **Uploaded videos survive floci restarts.** Verified: upload a clip, `docker
+  restart floci`, and the catalog row + segments + playback are all still there.
+- **Credentials.** `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` double as the
+  MinIO root user/password, so the secret must be **≥ 8 chars** (MinIO rejects
+  shorter). We use `minioadmin` / `minioadmin`; floci and dynamodb-local ignore
+  creds, so one pair works for all three.
+- **Public-read segments.** MinIO enforces bucket policies (floci did not). The
+  one-shot **`storage-bootstrap`** service (image `minio/mc`) creates both
+  buckets and sets `streamsre-hls-segments` to anonymous **download**, so the
+  origin's unsigned nginx proxy can serve `.m3u8`/`.m4s`. It's idempotent and
+  reruns on every `up`. The DynamoDB table + SQS queue still self-heal in-app.
+- **Browse your objects** at the MinIO console: `http://localhost:9001`
+  (login `minioadmin` / `minioadmin`).
+- **boto3 needs no code change** — with a custom endpoint + port it already uses
+  path-style addressing, which MinIO serves natively.
+- **Origin** proxies `/hls/…` to the `object_store` upstream (`minio:9000`), not
+  floci. Stored manifest URLs (`http://localhost:8080/hls/<job>/master.m3u8`) are
+  unchanged.
+
+To point at **real AWS**, set `S3_ENDPOINT_URL` / `DYNAMODB_ENDPOINT_URL` to the
+AWS endpoints (or empty) with real creds — MinIO and dynamodb-local drop out and
+the same code hits S3 + DynamoDB.
+
+---
+
 ## 1. What floci is
 
 floci is a single container that listens on `http://localhost:4566` and speaks
@@ -42,21 +84,26 @@ AWS_DEFAULT_REGION=us-east-1
 
 ## 2. Which AWS services / endpoints this project needs
 
-Only two, both served by floci on the one endpoint:
+Three AWS services, now split across durable local backends (see §0) — only SQS
+still runs in floci:
 
-| AWS service | Used for | Resources (created by Terraform) |
-|---|---|---|
-| **S3** | Raw uploads + generated HLS/DASH segments | `streamsre-raw-uploads`, `streamsre-hls-segments` |
-| **SQS** | Decouples upload from transcoding | `streamsre-transcode-queue`, `streamsre-transcode-dlq` |
+| AWS service | Backend | Used for | Resources |
+|---|---|---|---|
+| **S3** | MinIO (`minio:9000`) | Raw uploads + generated HLS/DASH segments | `streamsre-raw-uploads`, `streamsre-hls-segments` |
+| **DynamoDB** | dynamodb-local (`dynamodb-local:8000`) | Movie catalog + job status | `streamsre-catalog` |
+| **SQS** | floci (`:4566`) | Decouples upload from transcoding | `streamsre-transcode-queue`, `streamsre-transcode-dlq` |
 
-Everything talks to a single URL:
+MinIO and dynamodb-local are compose services reached by name on the compose
+network. **floci** (SQS) runs on the host, so containers reach it via
+`http://host.docker.internal:4566` — `extra_hosts: "host.docker.internal:host-gateway"`
+in `docker-compose.yml` makes that name resolve on both Docker Desktop and
+native Docker Engine. From the host (Terraform, `aws` CLI) floci is
+`http://localhost:4566`.
 
-- From the **host** (Terraform, `aws` CLI): `http://localhost:4566`
-- From **inside containers** (upload-api, transcode-worker, origin):
-  `http://host.docker.internal:4566` — because floci runs on the host, not on
-  this compose network. `extra_hosts: "host.docker.internal:host-gateway"` in
-  `docker-compose.yml` makes that name resolve on both Docker Desktop and native
-  Docker Engine.
+> The Terraform in `infra/terraform` still models all of this against a single
+> floci endpoint (it predates the MinIO/dynamodb-local split and documents the
+> real-AWS resource shapes). At runtime the app uses the split endpoints from
+> `.env`; Terraform is not required to run the stack.
 
 ---
 

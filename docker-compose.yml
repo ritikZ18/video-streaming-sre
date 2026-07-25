@@ -7,16 +7,80 @@
 # Provision the buckets/queues first with Terraform:  make tf-apply
 # Env contract mirrors floci's `./floci.sh env` (AWS_* = test / us-east-1).
 
+# Storage split: durable data (S3 objects + catalog) lives in persistent local
+# services that survive floci/Docker restarts — MinIO (S3-compatible, volume
+# minio_data) and dynamodb-local (volume dynamo_data). Only the transient SQS
+# transcode queue stays in the in-memory floci emulator (host.docker.internal:4566).
 x-floci-aws: &floci-aws
   AWS_REGION: ${AWS_REGION:-us-east-1}
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
-  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://host.docker.internal:4566}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
   SQS_ENDPOINT_URL: ${SQS_ENDPOINT_URL:-http://host.docker.internal:4566}
-  DYNAMODB_ENDPOINT_URL: ${DYNAMODB_ENDPOINT_URL:-http://host.docker.internal:4566}
+  DYNAMODB_ENDPOINT_URL: ${DYNAMODB_ENDPOINT_URL:-http://dynamodb-local:8000}
   DYNAMODB_TABLE: ${DYNAMODB_TABLE:-streamsre-catalog}
 
+# Services that touch S3/DynamoDB wait for MinIO + dynamodb-local to be up and
+# for the bucket bootstrap (public-read policy) to finish first.
+x-storage-deps: &storage-deps
+  minio:
+    condition: service_started
+  dynamodb-local:
+    condition: service_started
+  storage-bootstrap:
+    condition: service_completed_successfully
+
 services:
+  # --- MinIO: persistent, S3-compatible object storage ---
+  # Durable replacement for floci's in-memory S3. Objects (raw uploads + HLS
+  # segments) live on the minio_data volume and survive every restart.
+  minio:
+    image: minio/minio:latest
+    container_name: streamsre-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console (browse your objects at http://localhost:9001)
+    volumes:
+      - minio_data:/data
+
+  # --- One-shot bootstrap: create the two buckets + make segments public-read ---
+  # MinIO enforces bucket policies (floci did not), so the origin's anonymous
+  # nginx proxy needs the segments bucket set to public download. Idempotent;
+  # runs on every `up`. The DynamoDB table + SQS queue still self-heal in-app.
+  storage-bootstrap:
+    image: minio/mc:latest
+    container_name: streamsre-storage-bootstrap
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo 'waiting for minio...'; sleep 2;
+        done
+        mc mb -p local/streamsre-raw-uploads
+        mc mb -p local/streamsre-hls-segments
+        mc anonymous set download local/streamsre-hls-segments
+        echo 'storage-bootstrap complete'
+    restart: "no"
+
+  # --- Persistent DynamoDB catalog (survives floci restarts) ---
+  # dynamodb-local with -sharedDb + a volume; the app self-creates the table.
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: streamsre-dynamodb
+    user: root
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data"]
+    volumes:
+      - dynamo_data:/data
+
   # --- Upload API ---
   upload-api:
     build:
@@ -32,6 +96,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on: *storage-deps
     ports:
       - "8000:8000"
 
@@ -52,6 +117,7 @@ services:
       USE_NVENC: ${USE_NVENC:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on: *storage-deps
     # --- GPU (optional): uncomment once nvidia-container-toolkit is installed ---
     deploy:
       resources:
@@ -70,6 +136,7 @@ services:
     env_file: .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on: *storage-deps
     ports:
       - "8080:8080"
 
@@ -158,3 +225,5 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+  minio_data:   # persistent S3 objects (raw uploads + HLS segments)
+  dynamo_data:  # persistent movie catalog (DynamoDB)
