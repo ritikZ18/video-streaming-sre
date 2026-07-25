@@ -41,8 +41,12 @@ export type Movie = {
   manifestUrl?: string | null;
   /** DASH manifest URL for the same CMAF segments. */
   dashUrl?: string | null;
-  /** Poster frame extracted from the source video. */
+  /** Poster frame extracted from the source video (2:3 for cards). */
   thumbnailUrl?: string | null;
+  /** Wide 16:9 art for the hero (TMDB backdrop); falls back to thumbnailUrl. */
+  backdropUrl?: string | null;
+  /** True for catalog-only titles (e.g. TMDB) that have no playable stream. */
+  displayOnly?: boolean;
   /** Transcode progress 0-100. */
   progress?: number;
   /** Current transcode stage (download, 360p, 720p, 1080p, package, ...). */

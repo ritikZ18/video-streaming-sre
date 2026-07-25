@@ -19,7 +19,7 @@ from app.metrics import (
     TRANSCODE_JOBS_TOTAL,
     start_metrics_server,
 )
-from app.profiles import PROFILES
+from app.profiles import PROFILES, ladder_for
 from app.transcoder import (
     JobCancelled,
     encode_audio,
@@ -270,20 +270,22 @@ def process_message(message: dict[str, Any]) -> None:
         _ck()
 
         # 1) All video renditions in a SINGLE decode pass (GPU: decode once ->
-        # scale_cuda per rendition -> nvenc). The renditions encode together, so
-        # progress walks the 360p/720p/1080p checklist steps as one pass advances.
-        names = [p.name for p in PROFILES]
+        # scale_cuda per rendition -> nvenc). The ladder is chosen by the source
+        # height, so a 4K/60 source produces up to 2160p (nothing is upscaled).
+        source_height = int((media.get("video") or {}).get("height") or 0)
+        names = [p.name for p in ladder_for(source_height)]
         lo, hi = 5, 78
 
         def _cb(p: int) -> None:
             # p is 0-100 of the single pass; map onto the 5-78% overall band and
-            # pick the checklist step by which third of the pass we're in.
+            # pick the checklist step by which fraction of the pass we're in.
             idx = min(len(names) - 1, p * len(names) // 100)
             _emit(int(lo + (hi - lo) * p / 100), names[idx])
 
         _emit(lo, names[0])
         video_paths = encode_ladder(
             input_path, renditions_dir, seconds,
+            source_height=source_height,
             on_progress=_cb, should_cancel=should_cancel,
         )
 

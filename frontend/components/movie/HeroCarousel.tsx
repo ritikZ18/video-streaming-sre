@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Movie } from "../../lib/types";
 import { Play } from "lucide-react";
+import { HeroBackdrop } from "./HeroBackdrop";
+import { softSpring } from "../../lib/motion";
 
 type HeroCarouselProps = {
   movies: Movie[];
@@ -39,16 +41,17 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
           initial={{ opacity: 0, scale: 1.05 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 1.02 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
-          className="absolute inset-0 bg-cover bg-center"
-          style={
-            current.thumbnailUrl
-              ? { backgroundImage: `url("${current.thumbnailUrl}")` }
-              : { backgroundImage: current.gradient }
-          }
+          transition={softSpring}
+          className="absolute inset-0"
         >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(0,0,0,0.1),rgba(0,0,0,0.9))]" />
-          <div className="absolute inset-x-0 bottom-0 h-64 bg-gradient-to-t from-black via-black/60 to-transparent" />
+          <HeroBackdrop
+            src={current.manifestUrl}
+            image={current.backdropUrl ?? current.thumbnailUrl}
+            gradient={current.gradient}
+          />
+          {/* readability scrims — blended to the page base (#0a0a0f) */}
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_45%,rgba(0,0,0,0.05),rgba(10,10,15,0.86))]" />
+          <div className="absolute inset-x-0 bottom-0 h-72 bg-gradient-to-t from-[#0a0a0f] via-[#0a0a0f]/70 to-transparent" />
         </motion.div>
       </AnimatePresence>
 
@@ -59,7 +62,7 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
               {current.tag}
             </span>
           )}
-          <h1 className="text-[44px] font-extrabold leading-tight tracking-tight text-white">
+          <h1 className="text-[52px] font-bold leading-[0.98] tracking-display text-white">
             {current.title}
           </h1>
           <p className="text-sm font-medium text-white/70">

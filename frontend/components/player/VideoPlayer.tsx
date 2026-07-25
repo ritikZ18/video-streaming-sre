@@ -48,6 +48,12 @@ const menuAnim = {
   transition: { duration: 0.14 },
 };
 
+// Cinematic trailers bake a ~2.39:1 letterbox INTO the 16:9 frame, so object-fit
+// can't remove those bars (the frame IS 16:9). IMAX/fill zooms the picture until the
+// baked bars are cropped off-screen — 1080/800 ≈ 1.35 fills a standard 2.39:1 image.
+// Trades a little left/right crop for an edge-to-edge screen, exactly like VLC's fill.
+const IMAX_ZOOM = 1.35;
+
 export function VideoPlayer({
   src,
   poster,
@@ -82,6 +88,9 @@ export function VideoPlayer({
   const [bitrateKbps, setBitrateKbps] = useState(0);
   const [rebuffers, setRebuffers] = useState(0);
   const [startupMs, setStartupMs] = useState<number | null>(null);
+  const [playingHeight, setPlayingHeight] = useState(0); // actual rendition height, even in auto
+  const [imax, setImax] = useState(false); // fill-screen (object-cover) mode
+  const [imaxZoom, setImaxZoom] = useState(IMAX_ZOOM); // measured per-video + per-screen
 
   const sessionRef = useRef("");
   const eventsRef = useRef<BeaconEvent[]>([]);
@@ -155,6 +164,7 @@ export function VideoPlayer({
         const lvl = hls!.levels[data.level];
         if (lvl) {
           setBitrateKbps(Math.round((lvl.bitrate || 0) / 1000));
+          setPlayingHeight(lvl.height || 0);
           setCurrentLevel(hls!.autoLevelEnabled ? -1 : data.level);
           pushEvent({ event: "bitrate_switch", current_bitrate_kbps: Math.round((lvl.bitrate || 0) / 1000) });
         }
@@ -188,7 +198,16 @@ export function VideoPlayer({
       // sync with reality even if the discrete play/playing events were missed
       // (that is what left the ▶ overlay up while the video was actually playing).
       setPlaying(!video.paused);
-      if (!video.paused && video.currentTime > 0) setLoading(false);
+      if (!video.paused && video.currentTime > 0) {
+        setLoading(false);
+        // Fallback startup metric if the 'playing' event was missed.
+        if (!gotFirstRef.current) {
+          gotFirstRef.current = true;
+          const ms = Math.round(performance.now() - loadStartRef.current);
+          setStartupMs(ms);
+          pushEvent({ event: "startup", startup_ms: ms });
+        }
+      }
     };
     // Only trust a finite duration (a live/unfinalized HLS reports Infinity).
     const onMeta = () => {
@@ -251,6 +270,20 @@ export function VideoPlayer({
       setCurrent(v.currentTime);
       if (Number.isFinite(v.duration) && v.duration > 0) setDuration(v.duration);
       if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
+      // Ground truth for the on-screen resolution: the <video> element's own
+      // decoded frame height. This is what makes "Auto · 1080p" reliable even
+      // when hls.js LEVEL_SWITCHED is missed or currentLevel/loadLevel read -1.
+      if (v.videoHeight) setPlayingHeight(v.videoHeight);
+      // Bitrate still comes from hls.js (the element can't report it).
+      const hls = hlsRef.current;
+      if (hls) {
+        const idx = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
+        const lvl = hls.levels?.[idx];
+        if (lvl) {
+          if (!v.videoHeight && lvl.height) setPlayingHeight(lvl.height);
+          if (lvl.bitrate) setBitrateKbps(Math.round(lvl.bitrate / 1000));
+        }
+      }
     }, 250);
     return () => clearInterval(id);
   }, [src]);
@@ -267,10 +300,77 @@ export function VideoPlayer({
   }, [playing, bitrateKbps, flush, pushEvent]);
 
   useEffect(() => {
-    const onFs = () => setFullscreen(Boolean(document.fullscreenElement));
+    const onFs = () => {
+      const fs = Boolean(document.fullscreenElement);
+      setFullscreen(fs);
+      if (!fs) setImax(false); // leaving fullscreen exits IMAX fill
+    };
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
+
+  // IMAX fill zoom, measured — not guessed. Cinematic bars are baked into the
+  // pixels, so we draw the current frame to a tiny canvas, scan for the black
+  // bars (top/bottom AND sides), and compute the real content rectangle. Then we
+  // zoom so that rectangle exactly COVERS this screen: from object-contain scale
+  // s = min(bw/fw, bh/fh), Z = max(bw/(cw·s), bh/(ch·s)). Adapts per-video and
+  // per-display (16:9 TV vs 16:10 laptop vs ultrawide) instead of a fixed 1.35.
+  const measureImaxZoom = useCallback(() => {
+    const v = videoRef.current;
+    const box = containerRef.current;
+    if (!v || !box || !v.videoWidth || !v.videoHeight) return;
+    const fw = v.videoWidth;
+    const fh = v.videoHeight;
+    const bw = box.clientWidth;
+    const bh = box.clientHeight;
+    const sw = 240;
+    const sh = Math.max(2, Math.round((sw * fh) / fw));
+    let data: Uint8ClampedArray;
+    try {
+      const cvs = document.createElement("canvas");
+      cvs.width = sw;
+      cvs.height = sh;
+      const ctx = cvs.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(v, 0, 0, sw, sh);
+      data = ctx.getImageData(0, 0, sw, sh).data;
+    } catch {
+      return; // tainted canvas (shouldn't happen: origin sends ACAO) — keep zoom
+    }
+    const T = 18; // near-black luma threshold
+    const lum = (i: number) => 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const rowBlack = (y: number) => {
+      let s = 0, n = 0;
+      for (let x = 0; x < sw; x += 3) { s += lum((y * sw + x) * 4); n++; }
+      return s / n < T;
+    };
+    const colBlack = (x: number) => {
+      let s = 0, n = 0;
+      for (let y = 0; y < sh; y += 3) { s += lum((y * sw + x) * 4); n++; }
+      return s / n < T;
+    };
+    let top = 0; while (top < sh * 0.45 && rowBlack(top)) top++;
+    let bot = sh - 1; while (bot > sh * 0.55 && rowBlack(bot)) bot--;
+    let left = 0; while (left < sw * 0.45 && colBlack(left)) left++;
+    let right = sw - 1; while (right > sw * 0.55 && colBlack(right)) right--;
+    const ch = ((bot - top + 1) / sh) * fh;
+    const cw = ((right - left + 1) / sw) * fw;
+    // Guard: a fade-to-black / very dark frame gives a bogus tiny rect — ignore it.
+    if (ch < fh * 0.3 || cw < fw * 0.3) return;
+    const s = Math.min(bw / fw, bh / fh); // object-contain scale
+    const z = Math.max(bw / (cw * s), bh / (ch * s));
+    setImaxZoom(Math.min(2.6, Math.max(1, z)));
+  }, []);
+
+  // Measure when IMAX turns on, and re-measure if the window/monitor changes
+  // (screenAR changes → the fill zoom changes).
+  useEffect(() => {
+    if (!imax) return;
+    measureImaxZoom();
+    const onResize = () => measureImaxZoom();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [imax, measureImaxZoom]);
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -372,8 +472,13 @@ export function VideoPlayer({
     );
   }
 
+  // "Auto · 720p" in auto (shows the rendition actually playing); "720p" when pinned.
   const qualityLabel =
-    currentLevel === -1 ? "Auto" : `${levels.find((l) => l.index === currentLevel)?.height ?? "?"}p`;
+    currentLevel === -1
+      ? playingHeight
+        ? `Auto · ${playingHeight}p`
+        : "Auto"
+      : `${levels.find((l) => l.index === currentLevel)?.height ?? playingHeight ?? "?"}p`;
 
   const menuBtn =
     "flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold hover:bg-white/15";
@@ -385,7 +490,9 @@ export function VideoPlayer({
       ref={containerRef}
       onMouseMove={nudge}
       onMouseLeave={() => !videoRef.current?.paused && !menu && setShowControls(false)}
-      className="group relative aspect-video w-full select-none overflow-hidden rounded-2xl bg-black ring-1 ring-white/10"
+      className={`group relative w-full select-none overflow-hidden bg-black ${
+        fullscreen ? "h-full" : "aspect-video rounded-2xl ring-1 ring-white/10"
+      }`}
     >
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
@@ -394,7 +501,8 @@ export function VideoPlayer({
         poster={poster ?? undefined}
         crossOrigin="anonymous"
         preload="auto"
-        className="h-full w-full bg-black"
+        className={`absolute inset-0 h-full w-full bg-black transition-transform duration-200 ${imax ? "object-cover" : "object-contain"}`}
+        style={imax ? { transform: `scale(${imaxZoom})` } : undefined}
         playsInline
       >
         {subtitleTracks.map((t) => (
@@ -456,13 +564,37 @@ export function VideoPlayer({
             {...menuAnim}
             className="absolute right-3 top-12 z-20 w-56 rounded-xl bg-black/75 p-3 text-[11px] text-white/80 backdrop-blur-xl"
           >
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">QoE</div>
-            <ul className="space-y-0.5">
-              <li>Startup: {startupMs != null ? `${startupMs} ms` : "—"}</li>
-              <li>Bitrate: {bitrateKbps ? `${bitrateKbps} kbps` : "—"}</li>
-              <li>Quality: {qualityLabel}</li>
-              <li>Buffer: {Math.max(0, buffered - current).toFixed(1)} s</li>
-              <li>Rebuffers: {rebuffers}</li>
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px] shadow-emerald-400" />
+              Playback quality
+            </div>
+            <ul className="space-y-1">
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Quality</span>
+                <span className="font-medium text-white">{qualityLabel}</span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Bitrate</span>
+                <span className="font-medium text-white">
+                  {bitrateKbps ? `${(bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Startup</span>
+                <span className="font-medium text-white">
+                  {startupMs != null ? `${startupMs} ms` : "—"}
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Buffer</span>
+                <span className="font-medium text-white">
+                  {Math.max(0, buffered - current).toFixed(1)} s
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Rebuffers</span>
+                <span className="font-medium text-white">{rebuffers}</span>
+              </li>
             </ul>
           </motion.div>
         )}
@@ -582,6 +714,32 @@ export function VideoPlayer({
 
             <button type="button" onClick={() => setShowStats((s) => !s)} aria-label="Stats" className={`rounded p-1 hover:bg-white/15 ${showStats ? "text-indigo-300" : ""}`}>
               <Gauge className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              // IMAX only toggles the zoom-fill; it NEVER changes fullscreen.
+              // Enabled only while in fullscreen, and turning it off keeps you
+              // in fullscreen (leaving fullscreen is what resets imax, via onFs).
+              onClick={() => setImax((v) => !v)}
+              disabled={!fullscreen}
+              aria-pressed={imax}
+              aria-label="IMAX fill mode"
+              title={
+                !fullscreen
+                  ? "IMAX is available in fullscreen — enter fullscreen first"
+                  : imax
+                    ? "IMAX on — click to turn off (stays fullscreen)"
+                    : "IMAX — zoom past the cinematic black bars to fill the screen (crops the sides, never stretches)"
+              }
+              className={`rounded px-1.5 py-1 text-[11px] font-extrabold tracking-wide transition-colors ${
+                !fullscreen
+                  ? "cursor-not-allowed text-white/25"
+                  : imax
+                    ? "bg-[#0a4595] text-white shadow-[0_0_10px] shadow-blue-500/50 ring-1 ring-blue-400/60"
+                    : "text-white/80 hover:bg-white/15"
+              }`}
+            >
+              IMAX
             </button>
             <button type="button" onClick={toggleFullscreen} aria-label="Fullscreen">
               {fullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}

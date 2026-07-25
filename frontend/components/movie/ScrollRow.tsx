@@ -44,15 +44,16 @@ export function ScrollRow({
 
   return (
     <div className="relative mb-9">
-      <h2 className="mb-3 text-[20px] font-bold tracking-tight text-white">
+      <h2 className="mb-3 ml-1 text-[20px] font-semibold tracking-heading text-white">
         {title}
       </h2>
       <div className="relative">
         {showLeft && (
           <button
             type="button"
+            aria-label={`Scroll ${title} left`}
             onClick={() => scroll(-1)}
-            className="absolute left-[-10px] top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border-none bg-black/70 text-white backdrop-blur-xl"
+            className="absolute left-[-10px] top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border-none bg-black/70 text-white backdrop-blur-xl transition-colors hover:bg-black/85 focus-visible:ring-2 focus-visible:ring-white/60"
           >
             <ChevronLeft className="h-6 w-6" />
           </button>
@@ -60,7 +61,9 @@ export function ScrollRow({
         <div
           ref={scrollRef}
           onScroll={checkScroll}
-          className="flex gap-3 overflow-x-auto pb-2 [scrollbar-width:none]"
+          // pt/pb give the hover lift + scale room so cards aren't clipped
+          // (overflow-x:auto forces overflow-y to clip, hence the padding).
+          className="flex gap-4 overflow-x-auto px-2 pb-10 pt-6 [scrollbar-width:none]"
         >
           {movies.map((movie) => (
             <MovieCard
@@ -74,8 +77,9 @@ export function ScrollRow({
         {showRight && movies.length > 3 && (
           <button
             type="button"
+            aria-label={`Scroll ${title} right`}
             onClick={() => scroll(1)}
-            className="absolute right-[-10px] top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border-none bg-black/70 text-white backdrop-blur-xl"
+            className="absolute right-[-10px] top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border-none bg-black/70 text-white backdrop-blur-xl transition-colors hover:bg-black/85 focus-visible:ring-2 focus-visible:ring-white/60"
           >
             <ChevronRight className="h-6 w-6" />
           </button>
