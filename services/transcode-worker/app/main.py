@@ -345,6 +345,11 @@ def process_message(message: dict[str, Any]) -> None:
 
         manifest_url = f"{base}/{manifests['hls'].name}"
         dash_url = f"{base}/{manifests['dash'].name}"
+        # HDR videos also get a separate HEVC master; the player switches to it only
+        # when the browser can actually decode HEVC. None for SDR.
+        hdr_manifest_url = (
+            f"{base}/{manifests['hls_hevc'].name}" if manifests.get("hls_hevc") else None
+        )
         thumbnail_url = f"{base}/thumbnail.jpg" if thumb_path.exists() else None
         duration = _format_duration(seconds) if seconds else None
 
@@ -360,6 +365,7 @@ def process_message(message: dict[str, Any]) -> None:
             dash_url,
             duration=duration,
             thumbnail_url=thumbnail_url,
+            hdr_manifest_url=hdr_manifest_url,
             audio_tracks=audio_meta,
             subtitle_tracks=subtitle_tracks,
             media_info=media_info,

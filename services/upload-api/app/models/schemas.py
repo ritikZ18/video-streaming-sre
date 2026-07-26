@@ -49,6 +49,9 @@ class Movie(MovieBase):
     created_at: datetime
     status: Literal["processing", "ready"] = "ready"
     manifest_url: str | None = None
+    # HEVC master for HDR titles; the player uses it only where the browser can
+    # decode HEVC, else it falls back to manifest_url (H.264).
+    hdr_manifest_url: str | None = None
     dash_url: str | None = None
     thumbnail_url: str | None = None
     progress: int = 0

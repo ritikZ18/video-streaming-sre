@@ -135,11 +135,16 @@ def probe_media(input_path: Path) -> dict[str, Any]:
 
 
 def encode_audio(input_path: Path, output_path: Path, stream_index: int) -> Path:
-    """Encode one source audio stream to an AAC MP4 for CMAF packaging."""
+    """Encode one source audio stream to a STEREO AAC MP4 for CMAF packaging.
+
+    ``-ac 2`` downmixes multichannel sources (e.g. Dolby 5.1 = 6 channels) to
+    stereo. Browsers fail to append 6-channel AAC in a demuxed HLS SourceBuffer,
+    so a 5.1 title would refuse to play in any browser; stereo plays everywhere
+    (and web output is stereo anyway)."""
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path),
         "-map", f"0:{stream_index}", "-vn",
-        "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart", str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -540,20 +545,51 @@ def encode_ladder(
     return [("h264", h264_paths), ("hevc", hevc_paths)]
 
 
-def _fix_hevc_codec_string(master_path: Path) -> None:
-    """ffmpeg tags HEVC variants with a bare ``hvc1`` codec string, which browsers
-    can't evaluate precisely — Chrome may claim it's supported, then fail to decode
-    10-bit HDR HEVC and never fall back. Rewrite it to a proper Main10 RFC 6381
-    string so hls.js keeps HEVC only where it's genuinely playable (Safari, Chrome
-    with HEVC) and drops to the H.264 tier everywhere else."""
-    if not master_path.exists():
-        return
-    txt = master_path.read_text(encoding="utf-8")
-    # Main10, level 5.1 (covers up to 1440p60) — accurate enough for codec support
-    # detection; the profile digit (2 = Main10) is what browsers gate on.
-    txt = txt.replace('CODECS="hvc1,', 'CODECS="hvc1.2.4.L153.B0,')
-    txt = txt.replace('CODECS="hvc1"', 'CODECS="hvc1.2.4.L153.B0"')
-    master_path.write_text(txt, encoding="utf-8")
+# Precise HEVC Main10 RFC 6381 codec string (level 5.1 covers up to 1440p60). The
+# profile digit (2 = Main10) is what browsers gate on when deciding decode support.
+HEVC_CODEC = "hvc1.2.4.L153.B0"
+
+
+def _split_masters(master_path: Path) -> Path | None:
+    """Split ffmpeg's combined dual-codec master into two single-codec masters:
+
+    - ``master.m3u8``      — H.264 variants only. The universal default the player
+      loads first; it plays in every browser.
+    - ``master_hevc.m3u8`` — HEVC variants only, with a precise Main10 codec string.
+      The HDR tier; the player switches to it only when the browser can actually
+      decode HEVC (checked via mediaCapabilities). Written only if HEVC variants
+      exist (SDR videos get no HEVC master).
+
+    Serving one MIXED master breaks Chrome (it claims bare-hvc1 support, then fails
+    to decode 10-bit HDR HEVC and never falls back) — hence two separate masters.
+    Returns the HEVC master path, or None for SDR.
+    """
+    header: list[str] = []
+    h264: list[str] = []
+    hevc: list[str] = []
+    lines = master_path.read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("#EXT-X-STREAM-INF"):
+            uri = lines[i + 1] if i + 1 < len(lines) else ""
+            if "hvc1" in ln:
+                ln = ln.replace('CODECS="hvc1,', f'CODECS="{HEVC_CODEC},')
+                ln = ln.replace('CODECS="hvc1"', f'CODECS="{HEVC_CODEC}"')
+                hevc += [ln, uri]
+            else:
+                h264 += [ln, uri]
+            i += 2
+        else:
+            if ln.strip():  # keep header lines (#EXTM3U, VERSION, audio EXT-X-MEDIA)
+                header.append(ln)
+            i += 1
+    if not hevc:
+        return None  # SDR — master.m3u8 already H.264-only
+    master_path.write_text("\n".join(header + h264) + "\n", encoding="utf-8")
+    hevc_path = master_path.with_name("master_hevc.m3u8")
+    hevc_path.write_text("\n".join(header + hevc) + "\n", encoding="utf-8")
+    return hevc_path
 
 
 def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> None:
@@ -646,4 +682,7 @@ def package_cmaf(
         )
     if audio_tracks:
         _label_hls_audio(hls_master, audio_tracks)
-    return {"hls": hls_master, "dash": dash_manifest}
+    # Split the combined master into an H.264 default + a separate HEVC (HDR)
+    # master. hls_hevc is None for SDR videos (no HEVC variants).
+    hls_hevc = _split_masters(hls_master)
+    return {"hls": hls_master, "hls_hevc": hls_hevc, "dash": dash_manifest}

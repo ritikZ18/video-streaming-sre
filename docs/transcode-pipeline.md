@@ -71,15 +71,24 @@ CPU last-resort uses libx264/libx265 `-crf`.
   - **HEVC-Main10** (10-bit, BT.2020/PQ kept via `-color_primaries/-color_trc`): the
     HDR tier. Plays on Safari / Chrome-with-HEVC.
 
-  The player reads each variant's `CODECS` and picks the best it can decode — HEVC
-  where supported, H.264 otherwise. This fixes HDR sources that used to come out as
-  unplayable HDR-tagged H.264.
+## 4a. Two masters, not one — capability-based codec selection
 
-> **Why H.264 is listed first + the codec string matters.** ffmpeg tags HEVC
-> variants with a bare `hvc1`, which browsers can't evaluate — Chrome may *claim*
-> support then fail to decode 10-bit HEVC and never fall back. `package_cmaf`
-> rewrites it to a precise Main10 string **`hvc1.2.4.L153.B0`** so hls.js keeps HEVC
-> only where it's genuinely playable, and H.264 is the default variant.
+A *single* master listing both codecs breaks Chrome: it claims bare-`hvc1` support
+via `MediaSource.isTypeSupported`, tries the HEVC tier, then can't decode 10-bit HDR
+HEVC and never falls back. So `package_cmaf` (`_split_masters`) writes **two**
+single-codec masters:
+
+| File | Variants | Role |
+|---|---|---|
+| `master.m3u8` | `avc1` (H.264) | **Default.** `manifest_url`. Plays in every browser. |
+| `master_hevc.m3u8` | `hvc1.2.4.L153.B0` (HEVC Main10) | HDR tier. `hdr_manifest_url` (HDR titles only). |
+
+The **player** (`app/player/page.tsx`) decides which to load using
+`navigator.mediaCapabilities.decodingInfo(...)` — which reports *real* decode support
+(unlike the lying `isTypeSupported`). It loads `master_hevc.m3u8` only when the
+browser reports `supported && smooth` for HEVC (Safari, Chrome/Edge with HEVC
+hardware); otherwise the H.264 `master.m3u8`. SDR videos have no HEVC master and
+always use H.264.
 
 ## 5. Encoder/decoder fallback — full-GPU → hybrid → CPU
 

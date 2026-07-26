@@ -61,6 +61,7 @@ type ApiMovie = {
   duration?: string | null;
   tag?: string | null;
   manifest_url?: string | null;
+  hdr_manifest_url?: string | null;
   dash_url?: string | null;
   thumbnail_url?: string | null;
   status?: "processing" | "ready" | null;
@@ -126,6 +127,7 @@ export function mapMovie(m: ApiMovie): Movie {
     gradient: gradientFor(m.id + m.title),
     status: m.status ?? "ready",
     manifestUrl: m.manifest_url ?? null,
+    hdrManifestUrl: m.hdr_manifest_url ?? null,
     dashUrl: m.dash_url ?? null,
     thumbnailUrl: m.thumbnail_url ?? null,
     progress: m.progress ?? 0,

@@ -37,8 +37,10 @@ export type Movie = {
   /** CSS background-image value used for the card / hero artwork. */
   gradient: string;
   status?: MovieStatus;
-  /** HLS master playlist URL (playable once status === "ready"). */
+  /** HLS master playlist URL (playable once status === "ready"). H.264 — universal. */
   manifestUrl?: string | null;
+  /** HEVC (HDR) master for HDR titles; used only where the browser can decode HEVC. */
+  hdrManifestUrl?: string | null;
   /** DASH manifest URL for the same CMAF segments. */
   dashUrl?: string | null;
   /** Poster frame extracted from the source video (2:3 for cards). */
