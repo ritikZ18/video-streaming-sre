@@ -106,6 +106,10 @@ def probe_media(input_path: Path) -> dict[str, Any]:
                 "codec": s.get("codec_name"),
                 "width": s.get("width"),
                 "height": s.get("height"),
+                # Color signalling — used to detect HDR (PQ/HLG) sources so they
+                # get an HDR-preserving HEVC tier + a tonemapped H.264 fallback.
+                "color_transfer": s.get("color_transfer"),
+                "pix_fmt": s.get("pix_fmt"),
             }
         elif ctype == "audio":
             info["audio"].append({
@@ -314,56 +318,169 @@ def encode_rendition(
     return output_path
 
 
+# --- Encode quality ---------------------------------------------------------
+# Fixed bitrate spends the same bits on a static shot and a busy action scene;
+# constant-quality (CQ) VBR targets a visual QUALITY instead, so complex frames
+# get more bits automatically. A per-profile -maxrate cap keeps peak bitrate
+# streamable. Flag sets validated on this GTX 1650: H.264 8-bit takes the full
+# NVENC tuning; HEVC Main10 is kept conservative (spatial-aq / rc-lookahead can
+# report "No capable devices" for 10-bit on this Turing card).
+NVENC_CQ_H264 = "20"
+NVENC_CQ_HEVC = "23"  # HEVC is more efficient — a higher CQ ~ H.264's quality
+_NVENC_CORE = ["-rc", "vbr", "-b:v", "0", "-preset", "p7", "-tune", "hq"]
+_NVENC_H264_EXTRA = [
+    "-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8",
+    "-rc-lookahead", "20", "-b_ref_mode", "middle", "-multipass", "fullres",
+]
+_NVENC_HEVC_EXTRA = ["-multipass", "fullres"]
+
+# HDR (BT.2020 / PQ) signalling kept on the HEVC tier so the picture stays HDR.
+_HDR_TAGS = ["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"]
+# HDR->SDR tone-map (Hable), applied ONCE before the split, then scaled per rung.
+_TONEMAP = (
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
+)
+
+# Source color transfers that mean HDR (PQ / HLG).
+_HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+
+
+def is_hdr(media: dict[str, Any]) -> bool:
+    """True if the source signals HDR (PQ/HLG). HDR gets an HDR-preserving HEVC
+    tier plus a tonemapped H.264 fallback; SDR gets a single H.264 ladder."""
+    ct = ((media.get("video") or {}).get("color_transfer") or "").lower()
+    return ct in _HDR_TRANSFERS
+
+
+def can_nvdec_decode(media: dict[str, Any]) -> bool:
+    """True if this GPU's NVDEC can decode the source, so the full-GPU path is
+    worth trying. AV1 has no NVDEC on Turing (GTX 1650), and NVDEC H.264 is 8-bit
+    only — for those we skip straight to the CPU-decode + NVENC hybrid instead of
+    burning ~a minute on two doomed full-GPU attempts per job."""
+    v = media.get("video") or {}
+    codec = (v.get("codec") or "").lower()
+    pix = (v.get("pix_fmt") or "").lower()
+    if codec == "av1":
+        return False
+    if codec == "h264" and "10" in pix:  # High 10 / 10-bit H.264
+        return False
+    return True
+
+
 def build_ladder_command(
     input_path: Path,
     outputs: list[tuple[EncodingProfile, Path]],
-    use_nvenc: bool,
-    gpu_decode: bool = True,
+    *,
+    codec: str,          # "h264" | "hevc"
+    use_nvenc: bool,     # NVENC vs libx264/libx265
+    gpu_decode: bool,    # NVDEC + scale_cuda (only valid for SDR sources)
+    mode: str,           # "sdr" | "hdr_preserve" | "hdr_tonemap"
 ) -> list[str]:
-    """Single-pass command: decode the source ONCE and emit every rendition.
+    """One single-pass ladder command for ONE codec: decode the source ONCE,
+    split, scale per rung, encode each rung with CQ-VBR (+ a -maxrate cap).
 
-    Three modes (encoder × decoder):
-
-    - ``use_nvenc`` + ``gpu_decode`` — **full GPU**: NVDEC decode, frames kept on
-      the GPU (``-hwaccel_output_format cuda``), ``scale_cuda`` per rendition
-      (resize + 10-bit→8-bit on the GPU), one ``h264_nvenc`` per rendition. No CPU
-      scale; the expensive decode happens once, not once-per-rendition.
-    - ``use_nvenc`` + not ``gpu_decode`` — **hybrid**: CPU decode + libswscale
-      scale, but ``h264_nvenc`` encode. For sources this GPU can't NVDEC-decode
-      (e.g. AV1 on a Turing GTX 1650, which has no hardware AV1 decoder), this
-      keeps the expensive ENCODE on the GPU instead of dropping the whole job to
-      CPU.
-    - not ``use_nvenc`` — **full CPU**: decode once → scale per rendition → libx264.
+    mode:
+      - ``sdr``          -> 8-bit yuv420p, bt709.
+      - ``hdr_preserve`` -> 10-bit p010, BT.2020/PQ kept (the HEVC tier).
+      - ``hdr_tonemap``  -> HDR->SDR (Hable) once, then 8-bit (the H.264 fallback).
+    ``gpu_decode`` uses NVDEC + ``scale_cuda`` (only for SDR sources the GPU can
+    decode); otherwise CPU decode + libswscale lanczos. GPU lanczos isn't in this
+    ffmpeg build, so lanczos is applied on the CPU-scale path only.
     """
     settings = get_settings()
     n = len(outputs)
-    hw_decode = use_nvenc and gpu_decode
+    hw_decode = use_nvenc and gpu_decode and mode == "sdr"
+    pix = "p010le" if mode == "hdr_preserve" else "yuv420p"
+
     cmd: list[str] = ["ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error"]
     if hw_decode:
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
     cmd += ["-i", str(input_path)]
 
-    split = f"[0:v]split={n}" + "".join(f"[s{i}]" for i in range(n))
+    # (optional one-time HDR->SDR tonemap) -> split -> per-rung scale
+    head = f"[0:v]{_TONEMAP}[tm];[tm]" if mode == "hdr_tonemap" else "[0:v]"
+    split = f"{head}split={n}" + "".join(f"[s{i}]" for i in range(n))
     chains: list[str] = []
     for i, (prof, _) in enumerate(outputs):
         if hw_decode:
-            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format=yuv420p[v{i}]")
+            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format={pix}[v{i}]")
         else:
-            chains.append(f"[s{i}]scale={prof.width}:{prof.height},format=yuv420p[v{i}]")
+            chains.append(f"[s{i}]scale={prof.width}:{prof.height}:flags=lanczos,format={pix}[v{i}]")
     cmd += ["-filter_complex", ";".join([split] + chains)]
 
     for i, (prof, outp) in enumerate(outputs):
         cmd += ["-map", f"[v{i}]"]
-        if use_nvenc:
-            cmd += ["-c:v", "h264_nvenc", "-preset", settings.nvenc_preset]
-        else:
-            cmd += ["-c:v", "libx264", "-preset", settings.x264_preset, "-profile:v", prof.profile]
+        if use_nvenc and codec == "hevc":
+            cmd += ["-c:v", "hevc_nvenc", "-tag:v", "hvc1"]
+            if mode == "hdr_preserve":
+                cmd += ["-profile:v", "main10"]
+            cmd += ["-cq", NVENC_CQ_HEVC, *_NVENC_CORE, *_NVENC_HEVC_EXTRA]
+        elif use_nvenc:  # h264_nvenc
+            cmd += ["-c:v", "h264_nvenc", "-cq", NVENC_CQ_H264, *_NVENC_CORE, *_NVENC_H264_EXTRA]
+        elif codec == "hevc":
+            cmd += ["-c:v", "libx265", "-preset", settings.x264_preset, "-crf", "24", "-tag:v", "hvc1"]
+        else:  # libx264 CPU last resort
+            cmd += ["-c:v", "libx264", "-preset", settings.x264_preset, "-crf", "20", "-profile:v", prof.profile]
+        # Cap the peak so CQ output stays streamable + align keyframes to segments.
         cmd += [
-            "-b:v", prof.video_bitrate, "-maxrate", prof.maxrate, "-bufsize", prof.bufsize,
+            "-maxrate", prof.maxrate, "-bufsize", prof.bufsize,
             "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_DURATION})", "-sc_threshold", "0",
-            "-an", "-movflags", "+faststart", str(outp),
         ]
+        if mode == "hdr_preserve":
+            cmd += _HDR_TAGS
+        cmd += ["-an", "-movflags", "+faststart", str(outp)]
     return cmd
+
+
+def _encode_one_ladder(
+    input_path: Path,
+    outputs: list[tuple[EncodingProfile, Path]],
+    codec: str,
+    mode: str,
+    total_seconds: float,
+    on_progress: ProgressCb | None,
+    should_cancel: CancelCb | None,
+    gpu_decodable: bool = True,
+) -> list[Path]:
+    """Encode ONE codec's ladder with the full-GPU -> hybrid -> CPU fallback.
+
+    SDR with an NVDEC-decodable source tries full-GPU (NVDEC+NVENC, retried once
+    for cold NVENC), then hybrid (CPU decode + NVENC), then CPU. Sources this GPU
+    can't NVDEC-decode (AV1, 10-bit H.264) or any HDR mode skip full-GPU and start
+    at the hybrid, so we don't burn time on attempts that always fail.
+    """
+    settings = get_settings()
+
+    def run(use_nvenc: bool, gpu_decode: bool) -> None:
+        _run_ffmpeg_progress(
+            build_ladder_command(
+                input_path, outputs, codec=codec, use_nvenc=use_nvenc,
+                gpu_decode=gpu_decode, mode=mode,
+            ),
+            total_seconds, on_progress, should_cancel,
+        )
+
+    if settings.use_nvenc:
+        if mode == "sdr" and gpu_decodable:
+            for attempt in range(2):  # full GPU, retry once for cold-start NVENC
+                try:
+                    run(use_nvenc=True, gpu_decode=True)
+                    return [o for _, o in outputs]
+                except RuntimeError as exc:
+                    logger.warning("gpu_ladder_failed", codec=codec, attempt=attempt, error=str(exc)[:200])
+                    if attempt == 0:
+                        time.sleep(2.0)
+        try:  # hybrid: CPU decode + NVENC encode
+            logger.warning("hybrid_cpu_decode_gpu_encode", codec=codec, mode=mode)
+            run(use_nvenc=True, gpu_decode=False)
+            return [o for _, o in outputs]
+        except RuntimeError as exc:
+            logger.warning("hybrid_ladder_failed", codec=codec, error=str(exc)[:200])
+
+    logger.warning("ladder_using_cpu_fallback", codec=codec, mode=mode)
+    run(use_nvenc=False, gpu_decode=False)
+    return [o for _, o in outputs]
 
 
 def encode_ladder(
@@ -371,53 +488,49 @@ def encode_ladder(
     renditions_dir: Path,
     total_seconds: float,
     source_height: int = 0,
+    hdr: bool = False,
+    gpu_decodable: bool = True,
     on_progress: ProgressCb | None = None,
     should_cancel: CancelCb | None = None,
-) -> list[Path]:
-    """Encode the rendition ladder in a single decode pass; return output paths.
-    The ladder is chosen by ladder_for(source_height) so a 4K source produces
-    up to 2160p while smaller sources are never upscaled. Tries the GPU ladder
-    first (when NVENC is on) and falls back to a single-pass CPU ladder."""
-    settings = get_settings()
-    outputs = [(p, renditions_dir / f"v_{p.name}.mp4") for p in ladder_for(source_height)]
-    if settings.use_nvenc:
-        # 1) Full GPU (NVDEC decode + NVENC encode). NVENC occasionally fails to
-        # initialise on a cold worker / transient driver state ("GPU sometimes
-        # doesn't start"), so retry once (after a short settle) before giving up.
-        for attempt in range(2):
-            try:
-                _run_ffmpeg_progress(
-                    build_ladder_command(input_path, outputs, use_nvenc=True, gpu_decode=True),
-                    total_seconds, on_progress, should_cancel,
-                )
-                return [outp for _, outp in outputs]
-            except RuntimeError as exc:
-                logger.warning("nvenc_gpu_ladder_failed", attempt=attempt, error=str(exc)[:300])
-                if attempt == 0:
-                    time.sleep(2.0)
+) -> list[tuple[str, list[Path]]]:
+    """Encode the rendition ladder(s); return ``[(codec, [rung paths]), ...]``.
 
-        # 2) Hybrid (CPU decode + NVENC encode). The most common reason the full-GPU
-        # path fails is a source this GPU can't NVDEC-decode — e.g. AV1 on a Turing
-        # GTX 1650 ("your platform doesn't support hardware accelerated AV1
-        # decoding"). Decode on the CPU but keep the expensive ENCODE on the GPU,
-        # rather than abandoning NVENC and going fully CPU.
-        try:
-            logger.warning("nvenc_hybrid_cpu_decode_gpu_encode")
-            _run_ffmpeg_progress(
-                build_ladder_command(input_path, outputs, use_nvenc=True, gpu_decode=False),
-                total_seconds, on_progress, should_cancel,
-            )
-            return [outp for _, outp in outputs]
-        except RuntimeError as exc:
-            logger.warning("nvenc_hybrid_ladder_failed", error=str(exc)[:300])
+    - **SDR source** -> one H.264 ladder (universal), quality-upgraded.
+    - **HDR source** -> an HEVC-Main10 ladder that KEEPS the HDR **plus** a
+      tonemapped H.264 SDR ladder. Both are packaged into one master so HDR-capable
+      players use HEVC and everything else falls back to H.264.
 
-    # 3) Full CPU (libx264) — last resort when NVENC itself is unavailable.
-    logger.warning("ladder_using_cpu_fallback")
-    _run_ffmpeg_progress(
-        build_ladder_command(input_path, outputs, use_nvenc=False),
-        total_seconds, on_progress, should_cancel,
+    The ladder is chosen by ladder_for(source_height) so a 4K source produces up
+    to 2160p and smaller sources are never upscaled.
+    """
+    profiles = ladder_for(source_height)
+
+    def outs(codec: str) -> list[tuple[EncodingProfile, Path]]:
+        return [(p, renditions_dir / f"v_{codec}_{p.name}.mp4") for p in profiles]
+
+    if not hdr:
+        paths = _encode_one_ladder(
+            input_path, outs("h264"), "h264", "sdr",
+            total_seconds, on_progress, should_cancel,
+            gpu_decodable=gpu_decodable,
+        )
+        return [("h264", paths)]
+
+    # HDR: split the progress budget across the two ladders so the bar climbs 0->100.
+    def scaled(lo: int, hi: int) -> ProgressCb | None:
+        if on_progress is None:
+            return None
+        return lambda p: on_progress(int(lo + (hi - lo) * p / 100))
+
+    hevc_paths = _encode_one_ladder(
+        input_path, outs("hevc"), "hevc", "hdr_preserve",
+        total_seconds, scaled(0, 55), should_cancel,
     )
-    return [outp for _, outp in outputs]
+    h264_paths = _encode_one_ladder(
+        input_path, outs("h264"), "h264", "hdr_tonemap",
+        total_seconds, scaled(55, 100), should_cancel,
+    )
+    return [("hevc", hevc_paths), ("h264", h264_paths)]
 
 
 def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> None:
@@ -439,23 +552,30 @@ def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> N
 
 
 def package_cmaf(
-    video_paths: list[Path],
+    video_sets: list[tuple[str, list[Path]]],
     audio_tracks: list[dict[str, Any]],
     work_dir: Path,
 ) -> dict[str, Path]:
-    """Stream-copy the video renditions + per-language audio MP4s into ONE CMAF
-    set: master.m3u8 + manifest.mpd. No re-encode (``-c copy``), so it's fast.
+    """Stream-copy the video renditions (one or two codecs) + per-language audio
+    into ONE CMAF set: master.m3u8 + manifest.mpd. No re-encode (``-c copy``).
 
-    ``audio_tracks`` is a list of {"path", "language", "label"} — each becomes a
-    selectable audio rendition / DASH adaptation set.
+    ``video_sets`` is ``[(codec, [rung mp4s]), ...]`` — HDR has two sets (HEVC +
+    H.264). Each codec gets its OWN DASH adaptation set (a set must be single-codec
+    /switchable); in the HLS master they show as variants and the player picks the
+    best codec it can decode (HEVC-HDR, else H.264-SDR).
+    ``audio_tracks`` is a list of {"path", "language", "label"}.
     """
+    # Flatten to (codec, path) in a stable order, tracking which stream indices
+    # belong to each codec for the adaptation-set grouping.
+    videos: list[tuple[str, Path]] = [(codec, p) for codec, paths in video_sets for p in paths]
+
     cmd: list[str] = ["ffmpeg", "-y", "-loglevel", "error"]
-    for p in video_paths:
+    for _, p in videos:
         cmd += ["-i", str(p)]
     for a in audio_tracks:
         cmd += ["-i", str(a["path"])]
 
-    n_v = len(video_paths)
+    n_v = len(videos)
     for i in range(n_v):
         cmd += ["-map", f"{i}:v:0"]
     for j in range(len(audio_tracks)):
@@ -465,11 +585,23 @@ def package_cmaf(
     for j, a in enumerate(audio_tracks):
         cmd += [f"-metadata:s:a:{j}", f"language={a['language']}"]
 
-    # All video in adaptation set 0; each audio in its own set (per language).
-    video_streams = ",".join(str(i) for i in range(n_v))
-    sets = [f"id=0,streams={video_streams}"]
+    # One video adaptation set PER codec, then one per audio language.
+    groups: dict[str, list[int]] = {}
+    order: list[str] = []
+    for i, (codec, _) in enumerate(videos):
+        if codec not in groups:
+            groups[codec] = []
+            order.append(codec)
+        groups[codec].append(i)
+
+    sets: list[str] = []
+    sid = 0
+    for codec in order:
+        sets.append(f"id={sid},streams={','.join(str(i) for i in groups[codec])}")
+        sid += 1
     for j in range(len(audio_tracks)):
-        sets.append(f"id={j + 1},streams={n_v + j}")
+        sets.append(f"id={sid},streams={n_v + j}")
+        sid += 1
 
     cmd += [
         "-f", "dash", "-seg_duration", str(SEGMENT_DURATION),
