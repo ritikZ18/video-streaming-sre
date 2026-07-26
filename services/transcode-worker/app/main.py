@@ -274,7 +274,13 @@ def process_message(message: dict[str, Any]) -> None:
         # 1) All video renditions in a SINGLE decode pass (GPU: decode once ->
         # scale_cuda per rendition -> nvenc). The ladder is chosen by the source
         # height, so a 4K/60 source produces up to 2160p (nothing is upscaled).
-        source_height = int((media.get("video") or {}).get("height") or 0)
+        _v = media.get("video") or {}
+        _w, _h = int(_v.get("width") or 0), int(_v.get("height") or 0)
+        # Pick the ladder by the source's WIDTH-class so wide/letterboxed "4K"
+        # trailers (e.g. 2560x1350, only 1350 tall) aren't capped at 1080p — a
+        # 2560-wide source is 1440p-class. Renditions scale preserving aspect, so
+        # nothing is upscaled or distorted.
+        source_height = max(_h, round(_w * 9 / 16))
         hdr = is_hdr(media)
         gpu_decodable = can_nvdec_decode(media)
         names = [p.name for p in ladder_for(source_height)]

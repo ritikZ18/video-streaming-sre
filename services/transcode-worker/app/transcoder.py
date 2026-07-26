@@ -401,12 +401,16 @@ def build_ladder_command(
     # (optional one-time HDR->SDR tonemap) -> split -> per-rung scale
     head = f"[0:v]{_TONEMAP}[tm];[tm]" if mode == "hdr_tonemap" else "[0:v]"
     split = f"{head}split={n}" + "".join(f"[s{i}]" for i in range(n))
+    # Aspect-preserving downscale (fit inside the rung box, even dimensions, never
+    # upscale) so non-16:9 sources keep their shape and full width instead of being
+    # stretched into the profile's exact WxH.
+    fit = "force_original_aspect_ratio=decrease:force_divisible_by=2"
     chains: list[str] = []
     for i, (prof, _) in enumerate(outputs):
         if hw_decode:
-            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format={pix}[v{i}]")
+            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:{fit}:format={pix}[v{i}]")
         else:
-            chains.append(f"[s{i}]scale={prof.width}:{prof.height}:flags=lanczos,format={pix}[v{i}]")
+            chains.append(f"[s{i}]scale={prof.width}:{prof.height}:{fit}:flags=lanczos,format={pix}[v{i}]")
     cmd += ["-filter_complex", ";".join([split] + chains)]
 
     for i, (prof, outp) in enumerate(outputs):
@@ -522,15 +526,34 @@ def encode_ladder(
             return None
         return lambda p: on_progress(int(lo + (hi - lo) * p / 100))
 
-    hevc_paths = _encode_one_ladder(
-        input_path, outs("hevc"), "hevc", "hdr_preserve",
-        total_seconds, scaled(0, 55), should_cancel,
-    )
+    # Encode + list H.264-SDR FIRST (universal, always plays) then the
+    # HDR-preserving HEVC tier. H.264 first makes it the default variant, so a
+    # browser that can't decode HEVC never gets stuck on the HEVC ladder.
     h264_paths = _encode_one_ladder(
         input_path, outs("h264"), "h264", "hdr_tonemap",
-        total_seconds, scaled(55, 100), should_cancel,
+        total_seconds, scaled(0, 50), should_cancel,
     )
-    return [("hevc", hevc_paths), ("h264", h264_paths)]
+    hevc_paths = _encode_one_ladder(
+        input_path, outs("hevc"), "hevc", "hdr_preserve",
+        total_seconds, scaled(50, 100), should_cancel,
+    )
+    return [("h264", h264_paths), ("hevc", hevc_paths)]
+
+
+def _fix_hevc_codec_string(master_path: Path) -> None:
+    """ffmpeg tags HEVC variants with a bare ``hvc1`` codec string, which browsers
+    can't evaluate precisely — Chrome may claim it's supported, then fail to decode
+    10-bit HDR HEVC and never fall back. Rewrite it to a proper Main10 RFC 6381
+    string so hls.js keeps HEVC only where it's genuinely playable (Safari, Chrome
+    with HEVC) and drops to the H.264 tier everywhere else."""
+    if not master_path.exists():
+        return
+    txt = master_path.read_text(encoding="utf-8")
+    # Main10, level 5.1 (covers up to 1440p60) — accurate enough for codec support
+    # detection; the profile digit (2 = Main10) is what browsers gate on.
+    txt = txt.replace('CODECS="hvc1,', 'CODECS="hvc1.2.4.L153.B0,')
+    txt = txt.replace('CODECS="hvc1"', 'CODECS="hvc1.2.4.L153.B0"')
+    master_path.write_text(txt, encoding="utf-8")
 
 
 def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> None:
