@@ -46,6 +46,7 @@ def _update(
     dash_url: str,
     duration: str | None = None,
     thumbnail_url: str | None = None,
+    hdr_manifest_url: str | None = None,
     audio_tracks: list | None = None,
     subtitle_tracks: list | None = None,
     media_info: dict | None = None,
@@ -59,6 +60,9 @@ def _update(
         ":p": 100,
         ":stg": "ready",
     }
+    if hdr_manifest_url:
+        expr += ", hdr_manifest_url = :h"
+        values[":h"] = hdr_manifest_url
     if duration:
         # "duration" is a DynamoDB reserved word, so alias it.
         expr += ", #dur = :dur"
@@ -129,6 +133,7 @@ def mark_ready(
     dash_url: str,
     duration: str | None = None,
     thumbnail_url: str | None = None,
+    hdr_manifest_url: str | None = None,
     audio_tracks: list | None = None,
     subtitle_tracks: list | None = None,
     media_info: dict | None = None,
@@ -136,12 +141,16 @@ def mark_ready(
     """Flip the catalog entry for this job to ready and attach its manifest URLs,
     duration, thumbnail, audio/subtitle track lists and media metadata.
 
+    ``hdr_manifest_url`` (the HEVC master) is set only for HDR videos; the player
+    switches to it when the browser can decode HEVC.
+
     The movie id equals the job id (see upload-api), so a completed transcode
     maps directly onto its catalog row.
     """
     kw = {
         "duration": duration,
         "thumbnail_url": thumbnail_url,
+        "hdr_manifest_url": hdr_manifest_url,
         "audio_tracks": audio_tracks,
         "subtitle_tracks": subtitle_tracks,
         "media_info": media_info,

@@ -61,6 +61,7 @@ type ApiMovie = {
   duration?: string | null;
   tag?: string | null;
   manifest_url?: string | null;
+  hdr_manifest_url?: string | null;
   dash_url?: string | null;
   thumbnail_url?: string | null;
   status?: "processing" | "ready" | null;
@@ -126,6 +127,7 @@ export function mapMovie(m: ApiMovie): Movie {
     gradient: gradientFor(m.id + m.title),
     status: m.status ?? "ready",
     manifestUrl: m.manifest_url ?? null,
+    hdrManifestUrl: m.hdr_manifest_url ?? null,
     dashUrl: m.dash_url ?? null,
     thumbnailUrl: m.thumbnail_url ?? null,
     progress: m.progress ?? 0,
@@ -228,6 +230,17 @@ export async function cancelJob(jobId: string): Promise<void> {
   if (res.status === 409) throw new Error("Job already finished — nothing to cancel.");
   if (res.status === 404) return; // already gone
   if (!res.ok) throw new Error(`cancel failed: ${res.status}`);
+}
+
+/** Delete an uploaded movie — catalog row + HLS segments + raw source (admin only). */
+export async function deleteMovie(movieId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}`, {
+    method: "DELETE",
+    headers: { ...authHeader() },
+  });
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 404) return; // already gone
+  if (!res.ok && res.status !== 204) throw new Error(`delete failed: ${res.status}`);
 }
 
 export async function createMovie(

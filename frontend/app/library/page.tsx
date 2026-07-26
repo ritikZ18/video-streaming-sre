@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, UploadCloud, X } from "lucide-react";
+import { Loader2, UploadCloud, X, Trash2 } from "lucide-react";
 import type { Movie } from "../../lib/types";
-import { listMovies, cancelJob } from "../../lib/api";
+import { listMovies, cancelJob, deleteMovie } from "../../lib/api";
 import { getAdminToken } from "../../lib/auth";
 import { dedupeByTitle } from "../../lib/catalog";
 import { Navbar } from "../../components/layout/Navbar";
@@ -17,6 +17,7 @@ export default function LibraryPage() {
   const [selected, setSelected] = useState<Movie | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [canceling, setCanceling] = useState<Record<string, boolean>>({});
+  const [deleting, setDeleting] = useState<Record<string, boolean>>({});
 
   // Admin gate for the Stop button (cancel is admin-only server-side).
   useEffect(() => {
@@ -32,6 +33,24 @@ export default function LibraryPage() {
       setUploads((u) => u.filter((m) => m.id !== id));
     } catch {
       setCanceling((c) => ({ ...c, [id]: false }));
+    }
+  };
+
+  // Permanently delete a ready upload — catalog row + segments + source.
+  const handleDelete = async (m: Movie) => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`Delete "${m.title}"? This permanently removes it and its files.`)
+    ) {
+      return;
+    }
+    setDeleting((d) => ({ ...d, [m.id]: true }));
+    try {
+      await deleteMovie(m.id);
+      setUploads((u) => u.filter((x) => x.id !== m.id));
+      setSelected((s) => (s?.id === m.id ? null : s));
+    } catch {
+      setDeleting((d) => ({ ...d, [m.id]: false }));
     }
   };
 
@@ -161,7 +180,28 @@ export default function LibraryPage() {
             )}
             <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] justify-items-center gap-x-4 gap-y-7">
               {ready.map((m) => (
-                <MovieCard key={m.id} movie={m} onClick={setSelected} size="normal" />
+                <div key={m.id} className="group/card relative w-fit">
+                  <MovieCard movie={m} onClick={setSelected} size="normal" />
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDelete(m);
+                      }}
+                      disabled={deleting[m.id]}
+                      title="Delete permanently"
+                      aria-label={`Delete ${m.title}`}
+                      className="absolute right-2 top-2 z-20 rounded-lg bg-black/70 p-1.5 text-white/80 opacity-0 backdrop-blur transition-all group-hover/card:opacity-100 hover:bg-rose-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-100"
+                    >
+                      {deleting[m.id] ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           </section>

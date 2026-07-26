@@ -22,10 +22,12 @@ from app.metrics import (
 from app.profiles import PROFILES, ladder_for
 from app.transcoder import (
     JobCancelled,
+    can_nvdec_decode,
     encode_audio,
     encode_ladder,
     extract_subtitles_batch,
     extract_thumbnail,
+    is_hdr,
     package_cmaf,
     probe_duration,
     probe_media,
@@ -272,20 +274,36 @@ def process_message(message: dict[str, Any]) -> None:
         # 1) All video renditions in a SINGLE decode pass (GPU: decode once ->
         # scale_cuda per rendition -> nvenc). The ladder is chosen by the source
         # height, so a 4K/60 source produces up to 2160p (nothing is upscaled).
-        source_height = int((media.get("video") or {}).get("height") or 0)
+        _v = media.get("video") or {}
+        _w, _h = int(_v.get("width") or 0), int(_v.get("height") or 0)
+        # Pick the ladder by the source's WIDTH-class so wide/letterboxed "4K"
+        # trailers (e.g. 2560x1350, only 1350 tall) aren't capped at 1080p — a
+        # 2560-wide source is 1440p-class. Renditions scale preserving aspect, so
+        # nothing is upscaled or distorted.
+        source_height = max(_h, round(_w * 9 / 16))
+        hdr = is_hdr(media)
+        gpu_decodable = can_nvdec_decode(media)
         names = [p.name for p in ladder_for(source_height)]
         lo, hi = 5, 78
 
         def _cb(p: int) -> None:
-            # p is 0-100 of the single pass; map onto the 5-78% overall band and
-            # pick the checklist step by which fraction of the pass we're in.
+            # p is 0-100 of the encode; map onto the 5-78% overall band and pick
+            # the checklist step by which fraction of the encode we're in.
             idx = min(len(names) - 1, p * len(names) // 100)
             _emit(int(lo + (hi - lo) * p / 100), names[idx])
 
         _emit(lo, names[0])
-        video_paths = encode_ladder(
+        logger.info(
+            "encode_start", job_id=job_id, hdr=hdr,
+            gpu_decodable=gpu_decodable, source_height=source_height,
+            codec=(media.get("video") or {}).get("codec"),
+        )
+        # SDR -> one H.264 ladder; HDR -> HEVC(HDR) + H.264(tonemapped) ladders.
+        # gpu_decodable=False (AV1 / 10-bit H.264) skips the doomed full-GPU pass.
+        # Returns [(codec, [rung paths]), ...].
+        video_sets = encode_ladder(
             input_path, renditions_dir, seconds,
-            source_height=source_height,
+            source_height=source_height, hdr=hdr, gpu_decodable=gpu_decodable,
             on_progress=_cb, should_cancel=should_cancel,
         )
 
@@ -298,10 +316,10 @@ def process_message(message: dict[str, Any]) -> None:
             encode_audio(input_path, ap, a["stream_index"])
             audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
 
-        # 3) Package video + all audio into one CMAF set (HLS + DASH).
+        # 3) Package video (one or two codecs) + all audio into one CMAF set.
         _ck()
         _emit(85, "package")
-        manifests = package_cmaf(video_paths, audio_tracks, output_dir)
+        manifests = package_cmaf(video_sets, audio_tracks, output_dir)
 
         # 4) Text subtitles -> sidecar WebVTT, ALL in a single demux pass (image
         # subs are listed, not converted). One pass instead of one-per-track.
@@ -327,6 +345,11 @@ def process_message(message: dict[str, Any]) -> None:
 
         manifest_url = f"{base}/{manifests['hls'].name}"
         dash_url = f"{base}/{manifests['dash'].name}"
+        # HDR videos also get a separate HEVC master; the player switches to it only
+        # when the browser can actually decode HEVC. None for SDR.
+        hdr_manifest_url = (
+            f"{base}/{manifests['hls_hevc'].name}" if manifests.get("hls_hevc") else None
+        )
         thumbnail_url = f"{base}/thumbnail.jpg" if thumb_path.exists() else None
         duration = _format_duration(seconds) if seconds else None
 
@@ -342,6 +365,7 @@ def process_message(message: dict[str, Any]) -> None:
             dash_url,
             duration=duration,
             thumbnail_url=thumbnail_url,
+            hdr_manifest_url=hdr_manifest_url,
             audio_tracks=audio_meta,
             subtitle_tracks=subtitle_tracks,
             media_info=media_info,

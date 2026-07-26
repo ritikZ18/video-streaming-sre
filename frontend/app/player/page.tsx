@@ -7,6 +7,31 @@ import { VideoPlayer } from "../../components/player/VideoPlayer";
 import { getMovie } from "../../lib/api";
 import type { SubtitleTrack } from "../../lib/types";
 
+/** Whether THIS browser can actually decode 10-bit HDR HEVC smoothly — not just
+ * claim to. `mediaCapabilities.decodingInfo` is far more accurate than
+ * `isTypeSupported` (which Chrome answers `true` for `hvc1`, then fails to decode).
+ * Returns true only on a browser that reports real, smooth HEVC decode (Safari,
+ * Chrome/Edge with HEVC hardware). */
+async function canDecodeHevc(): Promise<boolean> {
+  const mc = typeof navigator !== "undefined" ? navigator.mediaCapabilities : undefined;
+  if (!mc?.decodingInfo) return false;
+  try {
+    const info = await mc.decodingInfo({
+      type: "media-source",
+      video: {
+        contentType: 'video/mp4; codecs="hvc1.2.4.L153.B0"',
+        width: 1920,
+        height: 1080,
+        bitrate: 6_000_000,
+        framerate: 30,
+      },
+    });
+    return info.supported && info.smooth;
+  } catch {
+    return false;
+  }
+}
+
 export default function PlayerPage() {
   const [p, setP] = useState<{
     url: string | null;
@@ -29,11 +54,17 @@ export default function PlayerPage() {
     if (id) {
       setLoading(!urlParam);
       void getMovie(id)
-        .then((m) => {
+        .then(async (m) => {
           if (m) {
             setSubs(m.subtitleTracks ?? []);
+            // HDR titles ship an HEVC master AND an H.264 one. Use HEVC only if the
+            // browser can really decode it; otherwise the universal H.264 master.
+            const url =
+              m.hdrManifestUrl && (await canDecodeHevc())
+                ? m.hdrManifestUrl
+                : m.manifestUrl;
             setP((prev) => ({
-              url: m.manifestUrl ?? prev.url,
+              url: url ?? prev.url,
               title: m.title ?? prev.title,
               poster: m.thumbnailUrl ?? prev.poster,
               id,

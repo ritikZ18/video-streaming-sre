@@ -97,6 +97,11 @@ def get(movie_id: str) -> Movie | None:
     return _to_movie(item) if item else None
 
 
+def delete_row(movie_id: str) -> None:
+    """Remove a movie's catalog row (its S3 objects are deleted separately)."""
+    _table().delete_item(Key={"id": movie_id})
+
+
 def request_cancel(movie_id: str) -> None:
     """Flag a processing job for cooperative cancellation. The worker polls this
     flag (cancel_requested) and aborts + cleans up when it sees it."""
