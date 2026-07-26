@@ -57,3 +57,21 @@ def object_exists(bucket: str, key: str) -> bool:
         raise
 
 
+def delete_prefix(bucket: str, prefix: str) -> int:
+    """Delete every object under ``prefix`` (e.g. all of one job's segments or its
+    raw source). Best-effort: returns the count removed and never raises, since the
+    catalog row is the source of truth for what's visible."""
+    client = _client()
+    deleted = 0
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objs:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": objs})
+                deleted += len(objs)
+    except (BotoCoreError, ClientError):
+        pass
+    return deleted
+
+

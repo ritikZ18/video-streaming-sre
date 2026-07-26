@@ -230,6 +230,17 @@ export async function cancelJob(jobId: string): Promise<void> {
   if (!res.ok) throw new Error(`cancel failed: ${res.status}`);
 }
 
+/** Delete an uploaded movie — catalog row + HLS segments + raw source (admin only). */
+export async function deleteMovie(movieId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}`, {
+    method: "DELETE",
+    headers: { ...authHeader() },
+  });
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 404) return; // already gone
+  if (!res.ok && res.status !== 204) throw new Error(`delete failed: ${res.status}`);
+}
+
 export async function createMovie(
   payload: MovieCreatePayload,
 ): Promise<Movie> {
