@@ -98,6 +98,106 @@ def _s3() -> BaseClient:
     return session.client("s3", endpoint_url=settings.s3_endpoint_url, config=_BOTO_CONFIG)
 
 
+def _object_exists(bucket: str, key: str) -> bool:
+    try:
+        _s3().head_object(Bucket=bucket, Key=key)
+        return True
+    except (BotoCoreError, ClientError):
+        return False
+
+
+def _first_key(bucket: str, prefix: str) -> str | None:
+    """First object key under a prefix (a job's stored source), or None."""
+    try:
+        resp = _s3().list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+        items = resp.get("Contents", [])
+        return items[0]["Key"] if items else None
+    except (BotoCoreError, ClientError):
+        return None
+
+
+def _ensure_queue() -> None:
+    """Create the transcode queue if it's missing (the ephemeral queue is empty
+    after a floci restart) so re-enqueued jobs have somewhere to land."""
+    settings = get_settings()
+    if not settings.sqs_transcode_queue_url:
+        return
+    client = _sqs()
+    name = settings.sqs_transcode_queue_url.rstrip("/").split("/")[-1]
+    try:
+        client.get_queue_url(QueueName=name)
+    except ClientError:
+        client.create_queue(QueueName=name, Attributes={"VisibilityTimeout": "1800"})
+
+
+def _enqueue_job(job_id: str, s3_key: str, filename: str) -> None:
+    settings = get_settings()
+    payload = {
+        "job_id": job_id,
+        "s3_key": s3_key,
+        "filename": filename,
+        "profiles": ["360p", "720p", "1080p"],
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _sqs().send_message(
+        QueueUrl=settings.sqs_transcode_queue_url,
+        MessageBody=json.dumps(payload),
+    )
+
+
+def _reconcile_orphans() -> None:
+    """Startup self-heal for jobs orphaned by an ephemeral-queue restart.
+
+    MinIO (source + segments) and DynamoDB (catalog) are durable, but SQS runs on
+    floci and is wiped on restart — so a row can be stuck 'processing' forever with
+    its queue message gone. For each such row: if its segments already finished,
+    mark it ready; else, if the source is still stored, re-enqueue it. Best-effort:
+    a failure here must never stop the worker from starting its poll loop.
+    """
+    settings = get_settings()
+    ids = catalog.list_processing_ids()
+    if not ids:
+        return
+    logger.info("reconcile_start", processing=len(ids))
+    try:
+        _ensure_queue()
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("reconcile_ensure_queue_failed", error=str(exc))
+    recovered = requeued = skipped = 0
+    for job_id in ids:
+        try:
+            base = f"{settings.origin_base_url}/hls/{job_id}"
+            # Finished but never marked ready (worker died between upload + mark).
+            if _object_exists(settings.s3_segments_bucket, f"{job_id}/master.m3u8"):
+                hdr = (
+                    f"{base}/master_hevc.m3u8"
+                    if _object_exists(settings.s3_segments_bucket, f"{job_id}/master_hevc.m3u8")
+                    else None
+                )
+                catalog.mark_ready(
+                    job_id, f"{base}/master.m3u8", f"{base}/manifest.mpd",
+                    hdr_manifest_url=hdr,
+                )
+                recovered += 1
+                continue
+            # Not finished — re-enqueue if the original source is still stored.
+            src = _first_key(settings.s3_video_bucket, f"{job_id}/")
+            if not src:
+                skipped += 1
+                logger.warning("reconcile_no_source", job_id=job_id)
+                continue
+            filename = src.split("/", 1)[1] if "/" in src else src
+            # A re-enqueue is a fresh start: drop any stale cancel flag first, or the
+            # worker would immediately cancel this job and delete its source.
+            catalog.clear_cancel(job_id)
+            _enqueue_job(job_id, src, filename)
+            requeued += 1
+            logger.info("reconcile_requeued", job_id=job_id)
+        except Exception as exc:  # noqa: BLE001 - one bad row must not stop the sweep
+            logger.warning("reconcile_row_failed", job_id=job_id, error=str(exc))
+    logger.info("reconcile_done", recovered=recovered, requeued=requeued, skipped=skipped)
+
+
 def _poll_queue() -> dict[str, Any] | None:
     settings = get_settings()
     if not settings.sqs_transcode_queue_url:
@@ -400,6 +500,12 @@ def main() -> None:
     """Entry point: poll SQS and process jobs indefinitely."""
     start_metrics_server(9100)
     logger.info("worker_started", pid=os.getpid())
+
+    # Recover jobs orphaned by an ephemeral-queue restart before polling.
+    try:
+        _reconcile_orphans()
+    except Exception as exc:  # noqa: BLE001 - reconcile must never block startup
+        logger.warning("reconcile_failed", error=str(exc))
 
     while True:
         try:

@@ -85,6 +85,9 @@ def _update(
         UpdateExpression=expr,
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
+        # Don't resurrect a row deleted/canceled mid-job: marking ready would
+        # otherwise upsert a row missing title/genre/year/rating.
+        ConditionExpression="attribute_exists(id)",
     )
 
 
@@ -107,6 +110,44 @@ def delete_row(movie_id: str) -> None:
         logger.warning("catalog_delete_failed", movie_id=movie_id, error=str(exc))
 
 
+def clear_cancel(movie_id: str) -> None:
+    """Drop a stale cancel flag so a re-enqueued job starts fresh. Without this, a
+    leftover ``cancel_requested`` from a prior session makes the worker immediately
+    cancel the re-enqueued job — and cancel-cleanup deletes its source."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression="REMOVE cancel_requested",
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("catalog_clear_cancel_failed", movie_id=movie_id, error=str(exc))
+
+
+def list_processing_ids() -> list[str]:
+    """IDs of every row still marked 'processing'. Used by the startup reconciler to
+    recover jobs whose SQS message was lost when the ephemeral queue restarted."""
+    ids: list[str] = []
+    try:
+        table = _table()
+        kwargs: dict = {
+            "FilterExpression": "#s = :s",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":s": "processing"},
+            "ProjectionExpression": "id",
+        }
+        while True:
+            resp = table.scan(**kwargs)
+            ids.extend(it["id"] for it in resp.get("Items", []) if "id" in it)
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs["ExclusiveStartKey"] = lek
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("catalog_list_processing_failed", error=str(exc))
+    return ids
+
+
 def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
     """Best-effort transcode progress (0-100) + current stage. Never raises."""
     try:
@@ -122,9 +163,14 @@ def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
             UpdateExpression=expr,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
+            # Never recreate a row that was deleted mid-job: an unguarded update_item
+            # upserts, leaving a phantom {id, progress, stage} row with no required
+            # fields that then 500s the catalog listing.
+            ConditionExpression="attribute_exists(id)",
         )
     except Exception as exc:  # noqa: BLE001 - progress is non-critical
-        logger.warning("catalog_progress_update_failed", movie_id=movie_id, error=str(exc))
+        # ConditionalCheckFailedException just means the row is gone (canceled/deleted).
+        logger.warning("catalog_progress_update_skipped", movie_id=movie_id, error=str(exc))
 
 
 def mark_ready(
@@ -158,8 +204,13 @@ def mark_ready(
     try:
         _update(movie_id, manifest_url, dash_url, **kw)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "ResourceNotFoundException":
             _ensure_table()
             _update(movie_id, manifest_url, dash_url, **kw)
+            return
+        if code == "ConditionalCheckFailedException":
+            # Row was deleted/canceled before this job finished — nothing to mark.
+            logger.warning("catalog_mark_ready_skipped_row_gone", movie_id=movie_id)
             return
         raise
