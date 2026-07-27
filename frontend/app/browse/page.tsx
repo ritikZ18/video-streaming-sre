@@ -25,7 +25,8 @@ export default function BrowsePage() {
     const load = () => {
       listMovies()
         .then((r) => {
-          if (active) setUploads(r);
+          // Browse is public — show published titles only.
+          if (active) setUploads(r.filter((m) => (m.visibility ?? "published") === "published"));
         })
         .catch(() => {});
     };

@@ -64,6 +64,9 @@ type ApiMovie = {
   hdr_manifest_url?: string | null;
   dash_url?: string | null;
   thumbnail_url?: string | null;
+  poster_url?: string | null;
+  backdrop_url?: string | null;
+  visibility?: "draft" | "published" | "unlisted" | null;
   status?: "processing" | "ready" | null;
   progress?: number | null;
   stage?: string | null;
@@ -129,7 +132,13 @@ export function mapMovie(m: ApiMovie): Movie {
     manifestUrl: m.manifest_url ?? null,
     hdrManifestUrl: m.hdr_manifest_url ?? null,
     dashUrl: m.dash_url ?? null,
-    thumbnailUrl: m.thumbnail_url ?? null,
+    // Effective poster shown on cards/hero: a custom upload wins over the
+    // auto-extracted frame. posterUrl keeps the raw custom value for the admin.
+    // Use `||` (not `??`) so a reset-to-auto empty string falls back correctly.
+    thumbnailUrl: m.poster_url || m.thumbnail_url || null,
+    posterUrl: m.poster_url || null,
+    backdropUrl: m.backdrop_url || m.poster_url || null,
+    visibility: m.visibility ?? "published",
     progress: m.progress ?? 0,
     stage: m.stage ?? null,
     audioTracks: m.audio_tracks ?? [],
@@ -241,6 +250,59 @@ export async function deleteMovie(movieId: string): Promise<void> {
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (res.status === 404) return; // already gone
   if (!res.ok && res.status !== 204) throw new Error(`delete failed: ${res.status}`);
+}
+
+export type MoviePatch = Partial<{
+  title: string;
+  description: string;
+  genre: string;
+  year: number;
+  rating: string;
+  tag: string;
+  visibility: "draft" | "published" | "unlisted";
+  // "" resets the poster to the auto-extracted frame; a URL pins a custom one.
+  poster_url: string;
+  backdrop_url: string;
+}>;
+
+/** Edit a title's metadata / visibility (admin). Returns the updated movie. */
+export async function updateMovie(movieId: string, patch: MoviePatch): Promise<Movie> {
+  const res = await fetch(`${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeader() },
+    body: JSON.stringify(patch),
+  });
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (!res.ok) throw new Error(`update failed: ${res.status}`);
+  return mapMovie((await res.json()) as ApiMovie);
+}
+
+/** Upload custom poster (2:3) or backdrop (16:9) artwork for a title (admin). */
+export async function uploadArtwork(
+  movieId: string,
+  file: File,
+  kind: "poster" | "backdrop" = "poster",
+): Promise<Movie> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/artwork?kind=${kind}`,
+    { method: "POST", headers: { ...authHeader() }, body: form },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (!res.ok) throw new Error(`artwork upload failed: ${res.status}`);
+  return mapMovie((await res.json()) as ApiMovie);
+}
+
+/** Re-run the transcode from the original source (admin). */
+export async function retranscodeMovie(movieId: string): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/retranscode`,
+    { method: "POST", headers: { ...authHeader() } },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Original source is gone — re-upload to re-transcode.");
+  if (!res.ok && res.status !== 202) throw new Error(`re-transcode failed: ${res.status}`);
 }
 
 export async function createMovie(
