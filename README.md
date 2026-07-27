@@ -62,12 +62,28 @@ It is designed so you can walk an interviewer through:
 
 > Drop PNGs into [`docs/images/`](docs/images/) with the filenames below and they'll render here.
 
-| | |
-|---|---|
-| **Home — Apple-TV-style catalog** | **Player with live QoE overlay** |
-| ![Home](docs/images/home.png) | ![Player](docs/images/player.png) |
-| **Admin studio — dashboard + catalog** | **Grafana — SLO & burn-rate dashboard** |
-| ![Admin](docs/images/admin.png) | ![Grafana](docs/images/grafana.png) |
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <b> 1. Home Apple-TV-style catalog</b><br/><br/>
+      <img src="https://github.com/user-attachments/assets/1310f76a-6c4d-44b7-977b-fc2e8dd55755" alt="Home page showing an Apple-TV-style catalog grid of movie posters" width="100%"/>
+    </td>
+    <td width="50%" valign="top">
+      <b> 2. Player live QoE overlay</b><br/><br/>
+      <img src="https://github.com/user-attachments/assets/663b2736-0ca5-4cd7-b046-4ee5675a78c7" alt="Video player with the live QoE stats overlay showing quality, frame rate and bitrate" width="100%"/>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b> 3. Admin studio dashboard &amp; catalog</b><br/><br/>
+      <img src="https://github.com/user-attachments/assets/f4d6129e-8785-4353-8196-6ffa1ba21378" alt="Admin studio showing stat cards and the editable catalog table" width="100%"/>
+    </td>
+    <td width="50%" valign="top">
+      <b> 4. Grafana SLO &amp; burn-rate dashboard</b><br/><br/>
+      <img src="https://github.com/user-attachments/assets/f3518a80-987f-4851-a3da-de6a11ffcea8" alt="Grafana dashboard with SLO and burn-rate panels" width="100%"/>
+    </td>
+  </tr>
+</table>
 
 ---
 
