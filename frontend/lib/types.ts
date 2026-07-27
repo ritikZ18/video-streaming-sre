@@ -45,8 +45,12 @@ export type Movie = {
   dashUrl?: string | null;
   /** Poster frame extracted from the source video (2:3 for cards). */
   thumbnailUrl?: string | null;
-  /** Wide 16:9 art for the hero (TMDB backdrop); falls back to thumbnailUrl. */
+  /** Custom poster uploaded by an admin; preferred over thumbnailUrl on cards. */
+  posterUrl?: string | null;
+  /** Wide 16:9 art for the hero (TMDB backdrop / custom); falls back to thumbnailUrl. */
   backdropUrl?: string | null;
+  /** Catalog visibility: published (public), unlisted (link-only), draft (hidden). */
+  visibility?: "draft" | "published" | "unlisted";
   /** True for catalog-only titles (e.g. TMDB) that have no playable stream. */
   displayOnly?: boolean;
   /** Transcode progress 0-100. */

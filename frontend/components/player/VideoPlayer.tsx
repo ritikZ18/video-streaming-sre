@@ -91,6 +91,8 @@ export function VideoPlayer({
   const [playingHeight, setPlayingHeight] = useState(0); // actual rendition height, even in auto
   const [imax, setImax] = useState(false); // fill-screen (object-cover) mode
   const [imaxZoom, setImaxZoom] = useState(IMAX_ZOOM); // measured per-video + per-screen
+  const [fps, setFps] = useState(0); // real presented frames/sec during playback
+  const [droppedFrames, setDroppedFrames] = useState(0); // frames the decoder couldn't show in time
 
   const sessionRef = useRef("");
   const eventsRef = useRef<BeaconEvent[]>([]);
@@ -285,6 +287,68 @@ export function VideoPlayer({
         }
       }
     }, 250);
+    return () => clearInterval(id);
+  }, [src]);
+
+  // ---- Live playback FPS ----
+  // requestVideoFrameCallback fires once per frame the compositor actually
+  // presents, so counting them over a ~1s window gives the true on-screen fps
+  // (24/30/60…), not the container's nominal rate. Falls back to decode stats.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    setFps(0);
+    setDroppedFrames(0);
+    type RVFCVideo = HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number, meta: { presentedFrames?: number }) => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    const rv = v as RVFCVideo;
+
+    if (typeof rv.requestVideoFrameCallback === "function") {
+      let handle = 0;
+      let winStart = 0;
+      let winFrames = 0;
+      let lastPresented = -1;
+      const cb = (now: number, meta: { presentedFrames?: number }) => {
+        const pf = meta.presentedFrames ?? 0;
+        if (lastPresented < 0) {
+          lastPresented = pf;
+          winStart = now;
+        } else {
+          winFrames += Math.max(1, pf - lastPresented);
+          lastPresented = pf;
+          const dt = now - winStart;
+          if (dt >= 1000) {
+            setFps(Math.round((winFrames * 1000) / dt));
+            const q = v.getVideoPlaybackQuality?.();
+            if (q) setDroppedFrames(q.droppedVideoFrames || 0);
+            winStart = now;
+            winFrames = 0;
+          }
+        }
+        handle = rv.requestVideoFrameCallback!(cb);
+      };
+      handle = rv.requestVideoFrameCallback(cb);
+      return () => rv.cancelVideoFrameCallback?.(handle);
+    }
+
+    // Fallback (Firefox): sample decoded-frame totals once a second.
+    let lastTotal = 0;
+    let lastTs = 0;
+    const id = setInterval(() => {
+      const q = v.getVideoPlaybackQuality?.();
+      const now = performance.now();
+      if (q) {
+        if (lastTs && !v.paused) {
+          const dt = (now - lastTs) / 1000;
+          if (dt > 0) setFps(Math.max(0, Math.round((q.totalVideoFrames - lastTotal) / dt)));
+        }
+        setDroppedFrames(q.droppedVideoFrames || 0);
+        lastTotal = q.totalVideoFrames;
+        lastTs = now;
+      }
+    }, 1000);
     return () => clearInterval(id);
   }, [src]);
 
@@ -574,6 +638,12 @@ export function VideoPlayer({
                 <span className="font-medium text-white">{qualityLabel}</span>
               </li>
               <li className="flex justify-between gap-4">
+                <span className="text-white/45">Frame rate</span>
+                <span className="font-medium text-white tabular-nums">
+                  {fps ? `${fps} fps` : "—"}
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
                 <span className="text-white/45">Bitrate</span>
                 <span className="font-medium text-white">
                   {bitrateKbps ? `${(bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}
@@ -594,6 +664,10 @@ export function VideoPlayer({
               <li className="flex justify-between gap-4">
                 <span className="text-white/45">Rebuffers</span>
                 <span className="font-medium text-white">{rebuffers}</span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Dropped</span>
+                <span className="font-medium text-white tabular-nums">{droppedFrames}</span>
               </li>
             </ul>
           </motion.div>

@@ -25,7 +25,9 @@ export default function HomePage() {
     const load = () => {
       listMovies()
         .then((real) => {
-          if (active) setUploads(real);
+          // Public home shows published titles only (draft/unlisted are hidden;
+          // unlisted stays reachable by direct link).
+          if (active) setUploads(real.filter((m) => (m.visibility ?? "published") === "published"));
         })
         .catch(() => {
           /* catalog API unreachable — keep what we have */

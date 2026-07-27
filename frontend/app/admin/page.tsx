@@ -7,6 +7,7 @@ import { Footer } from "../../components/layout/Footer";
 import { UploadDropzone } from "../../components/upload/UploadDropzone";
 import { UploadQueue } from "../../components/upload/UploadQueue";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
+import { AdminCatalog } from "../../components/admin/AdminCatalog";
 import { adminLogin } from "../../lib/api";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
@@ -141,6 +142,10 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
       </div>
 
       <AdminMovieForm />
+
+      <div className="mt-4 max-w-5xl">
+        <AdminCatalog />
+      </div>
     </>
   );
 }
