@@ -10,7 +10,7 @@ from typing import Any
 
 import boto3
 import structlog
-from app import catalog
+from app import catalog, jobqueue
 from app.config import get_settings
 from app.metrics import (
     QUEUE_DEPTH,
@@ -86,12 +86,6 @@ _DOWNLOAD_CFG = TransferConfig(max_concurrency=4)
 _MAX_RECEIVES = 4
 
 
-def _sqs() -> BaseClient:
-    settings = get_settings()
-    session = boto3.session.Session(region_name=settings.aws_region)
-    return session.client("sqs", endpoint_url=settings.sqs_endpoint_url, config=_BOTO_CONFIG)
-
-
 def _s3() -> BaseClient:
     settings = get_settings()
     session = boto3.session.Session(region_name=settings.aws_region)
@@ -116,53 +110,35 @@ def _first_key(bucket: str, prefix: str) -> str | None:
         return None
 
 
-def _ensure_queue() -> None:
-    """Create the transcode queue if it's missing (the ephemeral queue is empty
-    after a floci restart) so re-enqueued jobs have somewhere to land."""
-    settings = get_settings()
-    if not settings.sqs_transcode_queue_url:
-        return
-    client = _sqs()
-    name = settings.sqs_transcode_queue_url.rstrip("/").split("/")[-1]
-    try:
-        client.get_queue_url(QueueName=name)
-    except ClientError:
-        client.create_queue(QueueName=name, Attributes={"VisibilityTimeout": "1800"})
-
-
 def _enqueue_job(job_id: str, s3_key: str, filename: str) -> None:
-    settings = get_settings()
-    payload = {
-        "job_id": job_id,
-        "s3_key": s3_key,
-        "filename": filename,
-        "profiles": ["360p", "720p", "1080p"],
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    _sqs().send_message(
-        QueueUrl=settings.sqs_transcode_queue_url,
-        MessageBody=json.dumps(payload),
+    jobqueue.enqueue(
+        job_id,
+        {
+            "job_id": job_id,
+            "s3_key": s3_key,
+            "filename": filename,
+            "profiles": ["360p", "720p", "1080p"],
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        },
     )
 
 
 def _reconcile_orphans() -> None:
-    """Startup self-heal for jobs orphaned by an ephemeral-queue restart.
+    """Startup self-heal for jobs left mid-flight by a crash/restart.
 
-    MinIO (source + segments) and DynamoDB (catalog) are durable, but SQS runs on
-    floci and is wiped on restart — so a row can be stuck 'processing' forever with
-    its queue message gone. For each such row: if its segments already finished,
-    mark it ready; else, if the source is still stored, re-enqueue it. Best-effort:
-    a failure here must never stop the worker from starting its poll loop.
+    The queue is now durable (DynamoDB), so jobs are no longer lost on restart —
+    but a job that was in-flight when the worker died still shows status
+    'processing' with a held lease that would only free after the visibility
+    timeout. This sweep speeds recovery: for each 'processing' row, if its
+    segments already finished, mark it ready; else, if the source is still
+    stored, re-enqueue it immediately (overwriting any stale lease/entry).
+    Best-effort — a failure here must never stop the worker's poll loop.
     """
     settings = get_settings()
     ids = catalog.list_processing_ids()
     if not ids:
         return
     logger.info("reconcile_start", processing=len(ids))
-    try:
-        _ensure_queue()
-    except (BotoCoreError, ClientError) as exc:
-        logger.warning("reconcile_ensure_queue_failed", error=str(exc))
     recovered = requeued = skipped = 0
     for job_id in ids:
         try:
@@ -199,33 +175,14 @@ def _reconcile_orphans() -> None:
 
 
 def _poll_queue() -> dict[str, Any] | None:
-    settings = get_settings()
-    if not settings.sqs_transcode_queue_url:
-        logger.warning("sqs_transcode_queue_url_not_configured")
-        time.sleep(5)
-        return None
-
-    client = _sqs()
-    response = client.receive_message(
-        QueueUrl=settings.sqs_transcode_queue_url,
-        MaxNumberOfMessages=1,
-        WaitTimeSeconds=20,
-        AttributeNames=["ApproximateReceiveCount"],
-    )
-    messages = response.get("Messages", [])
-    QUEUE_DEPTH.set(len(messages))
-    if not messages:
-        return None
-    return messages[0]
+    """Long-poll the durable DynamoDB queue for one leased job (SQS-shaped dict)."""
+    message = jobqueue.receive(wait_seconds=20)
+    QUEUE_DEPTH.set(jobqueue.depth())
+    return message
 
 
 def _delete_message(receipt_handle: str) -> None:
-    settings = get_settings()
-    client = _sqs()
-    client.delete_message(
-        QueueUrl=settings.sqs_transcode_queue_url,
-        ReceiptHandle=receipt_handle,
-    )
+    jobqueue.delete(receipt_handle)
 
 
 def _download_input(bucket: str, key: str, dest: Path) -> None:

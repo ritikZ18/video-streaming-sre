@@ -18,16 +18,17 @@ class Settings(BaseSettings):
     )
     s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
 
-    sqs_transcode_queue_url: str = Field(
-        default="",
-        alias="SQS_TRANSCODE_QUEUE_URL",
-    )
-    sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
-    sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
-
     # DynamoDB (catalog) — the worker flips a movie to "ready" on completion.
     dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
     dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
+    # DynamoDB-backed durable job queue (replaces the ephemeral SQS emulator). A
+    # claimed job is leased for this many seconds; if the worker dies, the lease
+    # expires and the job becomes claimable again (at-least-once, like SQS).
+    queue_table: str = Field(default="streamsre-transcode-queue", alias="QUEUE_TABLE")
+    queue_visibility_timeout_seconds: int = Field(
+        default=1800, alias="QUEUE_VISIBILITY_TIMEOUT"
+    )
 
     # Browser-facing origin base URL used to build playback manifest URLs.
     origin_base_url: str = Field(default="http://localhost:8080", alias="ORIGIN_BASE_URL")
