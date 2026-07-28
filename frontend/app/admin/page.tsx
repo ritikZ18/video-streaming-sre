@@ -8,6 +8,7 @@ import { UploadDropzone } from "../../components/upload/UploadDropzone";
 import { UploadQueue } from "../../components/upload/UploadQueue";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
 import { AdminCatalog } from "../../components/admin/AdminCatalog";
+import { AdminObservability } from "../../components/admin/AdminObservability";
 import { adminLogin } from "../../lib/api";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
@@ -104,8 +105,11 @@ function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
+type Tab = "studio" | "observability";
+
 function AdminPanel({ onLogout }: { onLogout: () => void }) {
   const [files, setFiles] = useState<File[]>([]);
+  const [tab, setTab] = useState<Tab>("studio");
 
   const addFiles = (picked: File[]) => {
     const key = (f: File) => `${f.name}::${f.size}::${f.lastModified}`;
@@ -116,14 +120,18 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
     });
   };
 
+  const tabs: { key: Tab; label: string }[] = [
+    { key: "studio", label: "Studio" },
+    { key: "observability", label: "Observability" },
+  ];
+
   return (
-    <>
-      <div className="mb-8 flex max-w-3xl items-start justify-between">
+    <div className="max-w-5xl">
+      <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-heading">Admin · Upload</h1>
+          <h1 className="text-2xl font-bold tracking-heading">Admin</h1>
           <p className="mt-2 text-sm text-white/70">
-            Drop one or many videos. Each is uploaded, then the worker transcodes
-            them to HLS + DASH one at a time.
+            Upload and manage titles, or watch live playback quality.
           </p>
         </div>
         <button
@@ -136,16 +144,37 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
         </button>
       </div>
 
-      <div className="grid max-w-4xl gap-6">
-        <UploadDropzone count={files.length} onFilesSelected={addFiles} />
-        <UploadQueue files={files} onClear={() => setFiles([])} />
+      {/* Tabs */}
+      <div className="mb-6 flex gap-1 rounded-lg bg-white/5 p-1">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            className={[
+              "rounded-md px-4 py-1.5 text-sm font-semibold transition-colors",
+              tab === t.key ? "bg-white text-black" : "text-white/60 hover:text-white",
+            ].join(" ")}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <AdminMovieForm />
-
-      <div className="mt-4 max-w-5xl">
-        <AdminCatalog />
-      </div>
-    </>
+      {tab === "studio" ? (
+        <>
+          <div className="grid max-w-4xl gap-6">
+            <UploadDropzone count={files.length} onFilesSelected={addFiles} />
+            <UploadQueue files={files} onClear={() => setFiles([])} />
+          </div>
+          <AdminMovieForm />
+          <div className="mt-4">
+            <AdminCatalog />
+          </div>
+        </>
+      ) : (
+        <AdminObservability />
+      )}
+    </div>
   );
 }

@@ -49,6 +49,38 @@ export function sendBeacon(batch: {
   }).catch(() => {});
 }
 
+// ---- Live QoE stats (admin observability dashboard) ----
+
+export type QoeStats = {
+  window_seconds: number;
+  generated_at: number;
+  sessions: { total: number; active: number; rebuffer_free_pct: number };
+  startup_ms: { count: number; p50: number; p95: number; avg: number };
+  rebuffer: { events: number; sessions_affected: number; avg_ms: number; ratio: number };
+  bitrate_kbps: { avg: number; p50: number };
+  errors: { total: number; by_type: Record<string, number> };
+  top_content: {
+    content_id: string;
+    sessions: number;
+    startup_p95_ms: number;
+    rebuffer_ratio: number;
+  }[];
+  recent_events: {
+    ts: number;
+    session_id: string;
+    content_id: string | null;
+    event: string;
+    detail: string;
+  }[];
+};
+
+/** Live rolling QoE aggregation from the beacon collector (admin dashboard). */
+export async function fetchQoeStats(): Promise<QoeStats> {
+  const res = await fetch(`${BEACON_URL}/api/v1/beacon/stats`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`qoe stats failed: ${res.status}`);
+  return (await res.json()) as QoeStats;
+}
+
 // ---- Backend wire shapes (snake_case) ----
 
 type ApiMovie = {
