@@ -239,8 +239,18 @@ function EditDrawer({
   });
   const [visibility, setVisibility] = useState(movie.visibility ?? "published");
   // Poster source: "auto" = the frame the worker extracts; "custom" = an uploaded
-  // image. Switching to auto + Save clears the custom poster (poster_url = "").
-  const [posterMode, setPosterMode] = useState<"auto" | "custom">(movie.posterUrl ? "custom" : "auto");
+  // image; "url" = a link pasted from another site (e.g. TMDB). Auto + Save clears
+  // the custom poster (poster_url = ""); url + Save pins the pasted link.
+  const isUploaded = !!movie.posterUrl && movie.posterUrl.includes(`/hls/${movie.id}/poster`);
+  const initialPosterMode: "auto" | "custom" | "url" = movie.posterUrl
+    ? isUploaded
+      ? "custom"
+      : "url"
+    : "auto";
+  const [posterMode, setPosterMode] = useState<"auto" | "custom" | "url">(initialPosterMode);
+  const [posterUrlInput, setPosterUrlInput] = useState(
+    initialPosterMode === "url" ? movie.posterUrl ?? "" : "",
+  );
   const [busy, setBusy] = useState<null | "save" | "retranscode" | "poster" | "backdrop" | "delete">(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -259,8 +269,10 @@ function EditDrawer({
     setErr(null);
     try {
       const patch: MoviePatch = { ...form, visibility };
-      // Reset to the auto-extracted frame when the dropdown is on "auto".
+      // Poster source: auto clears it; url pins the pasted link; custom is set
+      // separately via the upload button, so leave poster_url untouched there.
       if (posterMode === "auto") patch.poster_url = "";
+      else if (posterMode === "url" && posterUrlInput.trim()) patch.poster_url = posterUrlInput.trim();
       const updated = await updateMovie(movie.id, patch);
       onChanged(updated);
       flash("Saved");
@@ -316,6 +328,8 @@ function EditDrawer({
   };
 
   const poster = posterOf(movie);
+  // Live preview reflects a pasted URL before it's saved.
+  const previewPoster = posterMode === "url" && posterUrlInput.trim() ? posterUrlInput.trim() : poster;
   const inp = "w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/40";
 
   return (
@@ -338,17 +352,18 @@ function EditDrawer({
         <div className="mb-5 flex gap-4">
           <span
             className="h-36 w-24 flex-none overflow-hidden rounded-lg bg-cover bg-center ring-1 ring-white/10"
-            style={{ backgroundImage: poster ? `url(${poster})` : movie.gradient }}
+            style={{ backgroundImage: previewPoster ? `url(${previewPoster})` : movie.gradient }}
           />
           <div className="flex flex-1 flex-col justify-center gap-2">
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-white/40">Poster</span>
             <select
               value={posterMode}
-              onChange={(e) => setPosterMode(e.target.value as "auto" | "custom")}
+              onChange={(e) => setPosterMode(e.target.value as "auto" | "custom" | "url")}
               className={`${inp} cursor-pointer`}
             >
               <option value="auto">Auto — from video frame</option>
-              <option value="custom">Custom — uploaded image</option>
+              <option value="custom">Custom — upload image</option>
+              <option value="url">From URL — paste a link</option>
             </select>
             <input ref={posterInput} type="file" accept="image/*" hidden onChange={(e) => pickArtwork(e.target.files?.[0], "poster")} />
             <input ref={backdropInput} type="file" accept="image/*" hidden onChange={(e) => pickArtwork(e.target.files?.[0], "backdrop")} />
@@ -356,6 +371,15 @@ function EditDrawer({
               <button type="button" disabled={!!busy} onClick={() => posterInput.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 disabled:opacity-50">
                 {busy === "poster" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />} Upload image
               </button>
+            )}
+            {posterMode === "url" && (
+              <input
+                type="url"
+                value={posterUrlInput}
+                onChange={(e) => setPosterUrlInput(e.target.value)}
+                placeholder="https://…/poster.jpg — then Save"
+                className={`${inp} text-xs`}
+              />
             )}
             <button type="button" disabled={!!busy} onClick={() => backdropInput.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 disabled:opacity-50">
               {busy === "backdrop" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />} Replace backdrop
