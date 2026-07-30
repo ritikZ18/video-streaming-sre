@@ -153,6 +153,27 @@ def encode_audio(input_path: Path, output_path: Path, stream_index: int) -> Path
     return output_path
 
 
+def encode_external_audio(
+    input_path: Path, output_path: Path, duration_seconds: float = 0.0
+) -> Path:
+    """Encode an ADMIN-ATTACHED external audio file to stereo AAC for a silent
+    title. When the video duration is known, pad-with-silence (``apad``) and cap
+    (``-t``) so the track lines up exactly with the video — a shorter track gets
+    trailing silence, a longer one is trimmed — keeping the CMAF segments clean.
+    With an unknown duration it takes the audio as-is."""
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path), "-vn"]
+    if duration_seconds and duration_seconds > 0:
+        cmd += ["-af", "apad", "-t", f"{duration_seconds:.3f}"]
+    cmd += [
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"external audio encode failed: {result.stderr}")
+    return output_path
+
+
 def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: int) -> bool:
     """Convert one text subtitle stream to a sidecar WebVTT file."""
     cmd = [

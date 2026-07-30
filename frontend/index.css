@@ -12,15 +12,15 @@
   display: none;
 }
 
-/* Depth instead of a flat black void: a lifted base tone plus a soft top
-   ambient light that stays anchored to the viewport as you scroll. */
+/* Depth instead of a flat black void: a lifted base tone plus two soft accent
+   glows (indigo left, violet right) that stay anchored to the viewport as you
+   scroll — same palette, just fresher and more alive than a single grey wash. */
 body {
-  background-color: #0a0a0f;
-  background-image: radial-gradient(
-    120% 80% at 50% -10%,
-    rgba(70, 70, 110, 0.22),
-    transparent 60%
-  );
+  background-color: #0a0f1e;
+  background-image:
+    radial-gradient(70% 55% at 12% -8%, rgba(99, 102, 241, 0.32), transparent 58%),
+    radial-gradient(62% 50% at 90% -6%, rgba(168, 85, 247, 0.24), transparent 56%),
+    radial-gradient(120% 85% at 50% -10%, rgba(70, 70, 110, 0.14), transparent 62%);
   background-repeat: no-repeat;
   background-attachment: fixed;
 }

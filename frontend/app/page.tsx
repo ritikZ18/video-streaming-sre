@@ -86,13 +86,14 @@ export default function HomePage() {
       <Navbar />
       <main className="relative z-0">
         <HeroCarousel movies={featured} onMoreInfo={setSelectedMovie} onPlay={playMovie} />
-        <section className="px-8 pb-16 pt-2">
+        <section className="px-8 pb-16 pt-3">
           {dedupedUploads.length > 0 && (
             <ScrollRow
               title="Your Library"
               movies={dedupedUploads}
               cardSize="large"
               onMovieClick={setSelectedMovie}
+              accent
             />
           )}
           {GENRES.map((g) => (

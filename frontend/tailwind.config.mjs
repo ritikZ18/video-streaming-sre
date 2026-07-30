@@ -21,7 +21,7 @@ export default {
       colors: {
         // Depth instead of flat black — see index.css for the page base + wash.
         surface: {
-          DEFAULT: "#0a0a0f", // page base (not pure black)
+          DEFAULT: "#0a0f1e", // page base — deep navy (not pure black)
           1: "#16161d", // elevated card surface
           2: "#1c1c26", // raised panel
         },
@@ -30,6 +30,8 @@ export default {
           DEFAULT: "#7d8bff",
           400: "#818cf8",
           500: "#6366f1",
+          violet: "#a855f7",
+          fuchsia: "#d946ef",
         },
       },
       textColor: {
@@ -50,15 +52,21 @@ export default {
       },
       boxShadow: {
         "glow-soft": "0 12px 40px -12px rgba(0, 0, 0, 0.7)",
+        // Vibrant indigo→violet cast for accent buttons / active chips.
+        "glow-accent": "0 16px 44px -16px rgba(124, 92, 255, 0.55)",
         // Apple-TV card focus: deep soft drop + top inner highlight + hairline ring.
         "card-focus":
           "0 26px 44px -18px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.10), inset 0 1px 0 rgba(255,255,255,0.14)",
         "card-rest": "0 8px 22px -12px rgba(0,0,0,0.9)",
       },
       backgroundImage: {
-        // Soft top vignette light so the top of the page isn't a void.
+        // Two soft accent glows (indigo left, violet right) — kept in sync with
+        // the body wash in index.css so the top of the page reads fresh, not flat.
         ambient:
-          "radial-gradient(120% 80% at 50% -10%, rgba(70,70,110,0.22), transparent 60%)",
+          "radial-gradient(70% 55% at 12% -8%, rgba(99,102,241,0.32), transparent 58%), radial-gradient(62% 50% at 90% -6%, rgba(168,85,247,0.24), transparent 56%)",
+        // Reusable accent sweep for text/hairline treatments.
+        "accent-sweep":
+          "linear-gradient(90deg, #818cf8, #a855f7 55%, #d946ef)",
       },
       keyframes: {
         slideUp: {

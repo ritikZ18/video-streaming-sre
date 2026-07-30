@@ -24,6 +24,7 @@ from app.transcoder import (
     JobCancelled,
     can_nvdec_decode,
     encode_audio,
+    encode_external_audio,
     encode_ladder,
     extract_subtitles_batch,
     extract_thumbnail,
@@ -108,6 +109,13 @@ def _first_key(bucket: str, prefix: str) -> str | None:
         return items[0]["Key"] if items else None
     except (BotoCoreError, ClientError):
         return None
+
+
+def _find_external_audio(job_id: str) -> str | None:
+    """Admin-attached external audio for a silent title (stored beside its
+    segments as ``{job_id}/external_audio.<ext>``), or None."""
+    settings = get_settings()
+    return _first_key(settings.s3_segments_bucket, f"{job_id}/external_audio")
 
 
 def _enqueue_job(job_id: str, s3_key: str, filename: str) -> None:
@@ -364,14 +372,25 @@ def process_message(message: dict[str, Any]) -> None:
             on_progress=_cb, should_cancel=should_cancel,
         )
 
-        # 2) Every audio track (per language) -> AAC.
+        # 2) Every audio track (per language) -> AAC. If the source is SILENT and
+        # an admin attached an external track, mux that in instead.
         _ck()
         _emit(80, "audio")
         audio_tracks = []
-        for a in media["audio"]:
-            ap = renditions_dir / f"a_{a['index']}.mp4"
-            encode_audio(input_path, ap, a["stream_index"])
-            audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
+        if media["audio"]:
+            for a in media["audio"]:
+                ap = renditions_dir / f"a_{a['index']}.mp4"
+                encode_audio(input_path, ap, a["stream_index"])
+                audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
+        else:
+            ext_key = _find_external_audio(job_id)
+            if ext_key:
+                ext_src = tmpdir / "external_audio"
+                _download_input(settings.s3_segments_bucket, ext_key, ext_src)
+                ap = renditions_dir / "a_ext.mp4"
+                encode_external_audio(ext_src, ap, seconds)
+                audio_tracks.append({"path": ap, "language": "und", "label": "Audio"})
+                logger.info("external_audio_muxed", job_id=job_id, key=ext_key)
 
         # 3) Package video (one or two codecs) + all audio into one CMAF set.
         _ck()

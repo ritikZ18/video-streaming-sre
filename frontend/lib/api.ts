@@ -105,6 +105,7 @@ type ApiMovie = {
   audio_tracks?: AudioTrack[];
   subtitle_tracks?: SubtitleTrack[];
   media_info?: MediaInfo | null;
+  has_external_audio?: boolean | null;
   created_at?: string;
 };
 
@@ -176,6 +177,7 @@ export function mapMovie(m: ApiMovie): Movie {
     audioTracks: m.audio_tracks ?? [],
     subtitleTracks: m.subtitle_tracks ?? [],
     mediaInfo: m.media_info ?? null,
+    hasExternalAudio: m.has_external_audio ?? false,
   };
 }
 
@@ -324,6 +326,21 @@ export async function uploadArtwork(
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (!res.ok) throw new Error(`artwork upload failed: ${res.status}`);
   return mapMovie((await res.json()) as ApiMovie);
+}
+
+/** Attach an external audio track to a silent title, then re-transcode with it
+    (admin). The clip re-segments with the new audio muxed in. */
+export async function attachAudio(movieId: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/audio`,
+    { method: "POST", headers: { ...authHeader() }, body: form },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Original source is gone — re-upload to add audio.");
+  if (res.status === 400) throw new Error("Unsupported audio format (use mp3, m4a, aac, wav, ogg, opus or flac).");
+  if (!res.ok && res.status !== 202) throw new Error(`attach audio failed: ${res.status}`);
 }
 
 /** Re-run the transcode from the original source (admin). */

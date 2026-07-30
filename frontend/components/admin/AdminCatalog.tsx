@@ -12,12 +12,14 @@ import {
   CheckCircle2,
   Clock,
   Eye,
+  Music,
 } from "lucide-react";
 import type { Movie } from "../../lib/types";
 import {
   listMovies,
   updateMovie,
   uploadArtwork,
+  attachAudio,
   retranscodeMovie,
   deleteMovie,
   type MoviePatch,
@@ -251,11 +253,19 @@ function EditDrawer({
   const [posterUrlInput, setPosterUrlInput] = useState(
     initialPosterMode === "url" ? movie.posterUrl ?? "" : "",
   );
-  const [busy, setBusy] = useState<null | "save" | "retranscode" | "poster" | "backdrop" | "delete">(null);
+  const [busy, setBusy] = useState<
+    null | "save" | "retranscode" | "poster" | "backdrop" | "audio" | "delete"
+  >(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const posterInput = useRef<HTMLInputElement>(null);
   const backdropInput = useRef<HTMLInputElement>(null);
+  const audioInput = useRef<HTMLInputElement>(null);
+
+  // A title "has audio" if the transcode found tracks (either embedded or a
+  // previously-attached external one shows up as a track once it re-processes).
+  const hasAudio =
+    (movie.audioTracks?.length ?? 0) > 0 || (movie.mediaInfo?.audio?.length ?? 0) > 0;
 
   const set = (k: keyof MoviePatch, val: string | number) => setForm((f) => ({ ...f, [k]: val }));
   const flash = (m: string) => {
@@ -292,6 +302,28 @@ function EditDrawer({
       if (kind === "poster") setPosterMode("custom");
       onChanged(updated);
       flash(kind === "poster" ? "Poster updated" : "Backdrop updated");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const pickAudio = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy("audio");
+    setErr(null);
+    try {
+      await attachAudio(movie.id, file);
+      onChanged({
+        ...movie,
+        status: "processing",
+        progress: 0,
+        stage: "queued",
+        manifestUrl: null,
+        hasExternalAudio: true,
+      });
+      flash("Audio attached — re-segmenting");
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -420,6 +452,40 @@ function EditDrawer({
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Audio — attach a track to a silent title */}
+        <div className="mt-5 border-t border-white/10 pt-5">
+          <span className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-wider text-white/40">Audio</span>
+          {hasAudio ? (
+            <p className="flex items-center gap-2 text-xs text-white/50">
+              <Music className="h-3.5 w-3.5 text-emerald-300" /> This title already has audio.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-white/50">
+                {movie.hasExternalAudio
+                  ? "External audio attached — re-attach to replace it."
+                  : "This clip has no audio. Attach a track and it re-segments with sound."}
+              </p>
+              <input
+                ref={audioInput}
+                type="file"
+                accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac"
+                hidden
+                onChange={(e) => pickAudio(e.target.files?.[0])}
+              />
+              <button
+                type="button"
+                disabled={!!busy}
+                onClick={() => audioInput.current?.click()}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 disabled:opacity-50"
+              >
+                {busy === "audio" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Music className="h-3.5 w-3.5" />}
+                {movie.hasExternalAudio ? "Replace audio" : "Attach audio"}
+              </button>
+            </div>
+          )}
         </div>
 
         {(msg || err) && (
