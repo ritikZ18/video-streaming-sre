@@ -60,4 +60,6 @@ export type Movie = {
   audioTracks?: AudioTrack[];
   subtitleTracks?: SubtitleTrack[];
   mediaInfo?: MediaInfo | null;
+  /** True once an admin attached an external audio track to a silent title. */
+  hasExternalAudio?: boolean;
 };

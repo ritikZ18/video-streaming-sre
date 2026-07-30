@@ -49,6 +49,38 @@ export function sendBeacon(batch: {
   }).catch(() => {});
 }
 
+// ---- Live QoE stats (admin observability dashboard) ----
+
+export type QoeStats = {
+  window_seconds: number;
+  generated_at: number;
+  sessions: { total: number; active: number; rebuffer_free_pct: number };
+  startup_ms: { count: number; p50: number; p95: number; avg: number };
+  rebuffer: { events: number; sessions_affected: number; avg_ms: number; ratio: number };
+  bitrate_kbps: { avg: number; p50: number };
+  errors: { total: number; by_type: Record<string, number> };
+  top_content: {
+    content_id: string;
+    sessions: number;
+    startup_p95_ms: number;
+    rebuffer_ratio: number;
+  }[];
+  recent_events: {
+    ts: number;
+    session_id: string;
+    content_id: string | null;
+    event: string;
+    detail: string;
+  }[];
+};
+
+/** Live rolling QoE aggregation from the beacon collector (admin dashboard). */
+export async function fetchQoeStats(): Promise<QoeStats> {
+  const res = await fetch(`${BEACON_URL}/api/v1/beacon/stats`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`qoe stats failed: ${res.status}`);
+  return (await res.json()) as QoeStats;
+}
+
 // ---- Backend wire shapes (snake_case) ----
 
 type ApiMovie = {
@@ -73,6 +105,7 @@ type ApiMovie = {
   audio_tracks?: AudioTrack[];
   subtitle_tracks?: SubtitleTrack[];
   media_info?: MediaInfo | null;
+  has_external_audio?: boolean | null;
   created_at?: string;
 };
 
@@ -144,6 +177,7 @@ export function mapMovie(m: ApiMovie): Movie {
     audioTracks: m.audio_tracks ?? [],
     subtitleTracks: m.subtitle_tracks ?? [],
     mediaInfo: m.media_info ?? null,
+    hasExternalAudio: m.has_external_audio ?? false,
   };
 }
 
@@ -292,6 +326,21 @@ export async function uploadArtwork(
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (!res.ok) throw new Error(`artwork upload failed: ${res.status}`);
   return mapMovie((await res.json()) as ApiMovie);
+}
+
+/** Attach an external audio track to a silent title, then re-transcode with it
+    (admin). The clip re-segments with the new audio muxed in. */
+export async function attachAudio(movieId: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/audio`,
+    { method: "POST", headers: { ...authHeader() }, body: form },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Original source is gone — re-upload to add audio.");
+  if (res.status === 400) throw new Error("Unsupported audio format (use mp3, m4a, aac, wav, ogg, opus or flac).");
+  if (!res.ok && res.status !== 202) throw new Error(`attach audio failed: ${res.status}`);
 }
 
 /** Re-run the transcode from the original source (admin). */

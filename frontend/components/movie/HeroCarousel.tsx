@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Movie } from "../../lib/types";
 import { Play } from "lucide-react";
@@ -19,6 +19,21 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
     [movies],
   );
   const [index, setIndex] = useState(0);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  // Mouse "active" in the hero → keep the title bright; idle → let it dim under
+  // the playing clip. Resets a couple seconds after the last movement.
+  const [active, setActive] = useState(false);
+  const idleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const markActive = () => {
+    setActive(true);
+    if (idleRef.current) clearTimeout(idleRef.current);
+    idleRef.current = setTimeout(() => setActive(false), 2000);
+  };
+  const clearActive = () => {
+    if (idleRef.current) clearTimeout(idleRef.current);
+    setActive(false);
+  };
 
   useEffect(() => {
     if (!featured.length) return;
@@ -29,12 +44,22 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
     return () => clearInterval(timer);
   }, [featured.length]);
 
+  useEffect(() => () => {
+    if (idleRef.current) clearTimeout(idleRef.current);
+  }, []);
+
   if (!featured.length) return null;
 
   const current = featured[index];
+  const dimText = videoPlaying && !active;
 
   return (
-    <section className="relative h-[520px] overflow-hidden">
+    <section
+      className="relative h-[88svh] min-h-[560px] overflow-hidden"
+      onMouseEnter={markActive}
+      onMouseMove={markActive}
+      onMouseLeave={clearActive}
+    >
       <AnimatePresence mode="wait">
         <motion.div
           key={current.id}
@@ -48,30 +73,52 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
             src={current.manifestUrl}
             image={current.backdropUrl ?? current.thumbnailUrl}
             gradient={current.gradient}
+            onPlayingChange={setVideoPlaying}
           />
-          {/* readability scrims — blended to the page base (#0a0a0f) */}
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_45%,rgba(0,0,0,0.05),rgba(10,10,15,0.86))]" />
-          <div className="absolute inset-x-0 bottom-0 h-72 bg-gradient-to-t from-[#0a0a0f] via-[#0a0a0f]/70 to-transparent" />
+          {/* readability scrim — blended to the deep-navy page base (#0a0f1e) */}
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_45%,rgba(0,0,0,0.05),rgba(10,15,30,0.86))]" />
+          {/* rich cinematic base — a cool blue glow rising from bottom-left and a
+              violet one from bottom-right; balanced, no single harsh corner */}
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(48%_42%_at_2%_100%,rgba(56,99,235,0.24),transparent_60%),radial-gradient(44%_40%_at_100%_100%,rgba(168,85,247,0.20),transparent_62%)]" />
+          {/* feather the bottom edge: progressive blur so the media melts into
+              the page rather than ending on a hard line */}
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-64 backdrop-blur-[6px]"
+            style={{
+              WebkitMaskImage: "linear-gradient(to top, #000 0%, #000 24%, transparent 100%)",
+              maskImage: "linear-gradient(to top, #000 0%, #000 24%, transparent 100%)",
+            }}
+          />
+          {/* …then fade fully into the deep-navy base */}
+          <div className="absolute inset-x-0 bottom-0 h-96 bg-[linear-gradient(to_top,#0a0f1e_0%,rgba(10,15,30,0.86)_42%,transparent_100%)]" />
         </motion.div>
       </AnimatePresence>
 
-      <div className="relative z-10 flex h-full items-end px-10 pb-24">
-        <div className="max-w-xl animate-slideUp space-y-3">
-          {current.tag && (
-            <span className="inline-flex rounded-full bg-white/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white backdrop-blur-xl">
-              {current.tag}
-            </span>
-          )}
-          <h1 className="text-[52px] font-bold leading-[0.98] tracking-display text-white">
-            {current.title}
-          </h1>
-          <p className="text-sm font-medium text-white/70">
-            {current.genre} · {current.year} · {current.rating} ·{" "}
-            {current.duration}
-          </p>
-          <p className="max-w-xl text-sm leading-relaxed text-white/60">
-            {current.description}
-          </p>
+      <div className="relative z-10 flex h-full items-end px-10 pb-28">
+        <div className="max-w-xl animate-slideUp space-y-4">
+          {/* Text group dims a little while the clip plays, unless the mouse is
+              active in the hero — then it snaps back to full brightness. */}
+          <div
+            className={`space-y-3 transition-opacity duration-500 ${
+              dimText ? "opacity-50" : "opacity-100"
+            }`}
+          >
+            {current.tag && (
+              <span className="inline-flex rounded-full border border-indigo-400/30 bg-indigo-500/20 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-indigo-100 backdrop-blur-xl">
+                {current.tag}
+              </span>
+            )}
+            <h1 className="text-[52px] font-bold leading-[0.98] tracking-display text-white">
+              {current.title}
+            </h1>
+            <p className="text-sm font-medium text-white/70">
+              {current.genre} · {current.year} · {current.rating} ·{" "}
+              {current.duration}
+            </p>
+            <p className="line-clamp-2 max-w-xl text-sm leading-relaxed text-white/60">
+              {current.description}
+            </p>
+          </div>
           <div className="flex gap-3 pt-2">
             <button
               type="button"
@@ -104,7 +151,7 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
               onClick={() => setIndex(idx)}
               className={`h-2 rounded-full transition-all ${
                 active
-                  ? "w-6 bg-white"
+                  ? "w-7 bg-gradient-to-r from-indigo-400 to-fuchsia-400 shadow-glow-accent"
                   : "w-2 bg-white/40 hover:bg-white/70"
               }`}
             />

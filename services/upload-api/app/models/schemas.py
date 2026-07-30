@@ -71,6 +71,10 @@ class Movie(MovieBase):
     audio_tracks: list[AudioTrack] = Field(default_factory=list)
     subtitle_tracks: list[SubtitleTrack] = Field(default_factory=list)
     media_info: dict[str, Any] | None = None
+    # True once an admin attaches an external audio track to a silent title. The
+    # worker muxes it only when the source has no embedded audio; survives
+    # re-transcodes (stored beside the segments, like custom artwork).
+    has_external_audio: bool = False
 
 
 class MoviePatch(BaseModel):

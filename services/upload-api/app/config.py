@@ -25,17 +25,12 @@ class Settings(BaseSettings):
     )
     s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
 
-    # SQS
-    sqs_transcode_queue_url: str = Field(
-        default="",
-        alias="SQS_TRANSCODE_QUEUE_URL",
-    )
-    sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
-    sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
-
     # DynamoDB (catalog)
     dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
     dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
+    # DynamoDB-backed durable job queue (replaces the ephemeral SQS emulator).
+    queue_table: str = Field(default="streamsre-transcode-queue", alias="QUEUE_TABLE")
 
     # Admin auth (gates the write endpoints: upload + create movie)
     admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")

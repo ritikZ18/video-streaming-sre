@@ -10,6 +10,8 @@ type ScrollRowProps = {
   movies: Movie[];
   onMovieClick: (movie: Movie) => void;
   cardSize?: "normal" | "large";
+  // Highlighted rows (e.g. "Your Library") get the accent gradient heading.
+  accent?: boolean;
 };
 
 export function ScrollRow({
@@ -17,6 +19,7 @@ export function ScrollRow({
   movies,
   onMovieClick,
   cardSize = "normal",
+  accent = false,
 }: ScrollRowProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [showLeft, setShowLeft] = useState(false);
@@ -44,8 +47,19 @@ export function ScrollRow({
 
   return (
     <div className="relative mb-9">
-      <h2 className="mb-3 ml-1 text-[20px] font-semibold tracking-heading text-white">
-        {title}
+      <h2 className="mb-3 ml-1 flex items-center gap-2 text-[20px] font-semibold tracking-heading text-white">
+        {accent && (
+          <span className="h-4 w-1 rounded-full bg-gradient-to-b from-indigo-400 to-fuchsia-400" />
+        )}
+        <span
+          className={
+            accent
+              ? "bg-gradient-to-r from-indigo-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent"
+              : undefined
+          }
+        >
+          {title}
+        </span>
       </h2>
       <div className="relative">
         {showLeft && (

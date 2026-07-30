@@ -108,6 +108,66 @@ def upload_artwork(
     return _require_movie(movie_id)
 
 
+# Audio containers accepted for an attached external track (content-type → ext).
+_AUDIO_EXT = {
+    "audio/mpeg": "mp3", "audio/mp3": "mp3",
+    "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/m4a": "m4a",
+    "audio/aac": "aac", "audio/aacp": "aac",
+    "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+    "audio/ogg": "ogg", "audio/opus": "opus", "audio/x-opus+ogg": "opus",
+    "audio/flac": "flac", "audio/x-flac": "flac",
+}
+_AUDIO_EXTS = ("mp3", "m4a", "aac", "wav", "ogg", "opus", "flac")
+
+
+@router.post("/{movie_id}/audio", status_code=status.HTTP_202_ACCEPTED)
+def attach_audio(
+    movie_id: str,
+    file: UploadFile = File(...),  # noqa: B008
+    _admin: str = Depends(require_admin),
+) -> dict[str, str]:
+    """Attach an external audio track to a (silent) title and re-transcode so the
+    new segments carry it. The file is stored beside the title's segments so it
+    survives re-transcodes; the worker muxes it only when the source has no
+    embedded audio. Requires the original video source to still be in S3."""
+    settings = get_settings()
+    _require_movie(movie_id)
+    src = s3.first_key(settings.s3_video_bucket, f"{movie_id}/")
+    if not src:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Original source is no longer stored — re-upload to add audio.",
+        )
+    ctype = (file.content_type or "").lower().split(";")[0]
+    ext = _AUDIO_EXT.get(ctype)
+    if ext is None:  # fall back to the filename extension
+        fname = (file.filename or "").lower()
+        ext = next((e for e in _AUDIO_EXTS if fname.endswith(f".{e}")), None)
+    if ext is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio must be mp3, m4a, aac, wav, ogg, opus or flac",
+        )
+    data = file.file.read()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
+    # Keep exactly one attached track: drop any prior external_audio.* first.
+    s3.delete_prefix(settings.s3_segments_bucket, f"{movie_id}/external_audio.")
+    s3.upload_bytes(
+        settings.s3_segments_bucket,
+        f"{movie_id}/external_audio.{ext}",
+        data,
+        ctype or "application/octet-stream",
+    )
+    catalog.update_fields(
+        movie_id,
+        {"has_external_audio": True, "status": "processing", "progress": 0, "stage": "queued"},
+    )
+    filename = src.split("/", 1)[1] if "/" in src else src
+    queue.enqueue_transcode_job(job_id=movie_id, s3_key=src, filename=filename)
+    return {"job_id": movie_id, "status": "queued"}
+
+
 @router.post("/{movie_id}/retranscode", status_code=status.HTTP_202_ACCEPTED)
 def retranscode(movie_id: str, _admin: str = Depends(require_admin)) -> dict[str, str]:
     """Re-run the transcode from the original source (admin): flip the row back to
