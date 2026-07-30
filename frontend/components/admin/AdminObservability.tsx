@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2 } from "lucide-react";
+import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 
@@ -61,7 +61,7 @@ const eventColor: Record<string, string> = {
 
 export function AdminObservability() {
   const [stats, setStats] = useState<QoeStats | null>(null);
-  const [titles, setTitles] = useState<Map<string, string>>(new Map());
+  const [movies, setMovies] = useState<Movie[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState(false);
 
@@ -81,12 +81,25 @@ export function AdminObservability() {
     return () => clearInterval(t);
   }, [load]);
 
-  // Map content_id → title for readable per-title rows / event feed.
+  // Poll the catalog for the content_id → title map AND live encode status.
   useEffect(() => {
-    listMovies()
-      .then((ms: Movie[]) => setTitles(new Map(ms.map((m) => [m.id, m.title]))))
-      .catch(() => {});
+    const loadMovies = () => {
+      listMovies().then(setMovies).catch(() => {});
+    };
+    loadMovies();
+    const t = setInterval(loadMovies, 4000);
+    return () => clearInterval(t);
   }, []);
+
+  const titles = useMemo(
+    () => new Map(movies.map((m) => [m.id, m.title] as const)),
+    [movies],
+  );
+  // Titles still encoding (processing, no playable manifest yet).
+  const encoding = useMemo(
+    () => movies.filter((m) => m.status === "processing" && !m.manifestUrl),
+    [movies],
+  );
 
   const titleOf = useCallback(
     (id: string | null) => (id && titles.get(id)) || (id ? `${id.slice(0, 8)}…` : "—"),
@@ -166,6 +179,44 @@ export function AdminObservability() {
           sub={`avg bitrate ${s.bitrate_kbps.avg ? `${(s.bitrate_kbps.avg / 1000).toFixed(1)} Mbps` : "—"}`}
           tone={s.errors.total === 0 ? "good" : "bad"}
         />
+      </div>
+
+      {/* Transcode jobs — live encode progress from the catalog (upload-api) */}
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+        <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+            <Film className="h-3.5 w-3.5" /> Transcode jobs
+          </span>
+          <span className="tabular-nums text-[11px] text-white/40">{encoding.length} active</span>
+        </div>
+        {encoding.length === 0 ? (
+          <p className="px-4 py-5 text-center text-sm text-white/40">
+            No active encodes — everything&apos;s ready.
+          </p>
+        ) : (
+          <ul className="divide-y divide-white/[0.06]">
+            {encoding.map((m) => {
+              const pct = Math.max(0, Math.min(100, m.progress ?? 0));
+              return (
+                <li key={m.id} className="px-4 py-3">
+                  <div className="mb-1.5 flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-white">{m.title}</span>
+                    <span className="flex items-center gap-2 whitespace-nowrap text-[11px] text-white/50">
+                      <span className="capitalize">{m.stage ?? "queued"}</span>
+                      <span className="tabular-nums">{pct}%</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-400 transition-[width] duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       {empty && (
