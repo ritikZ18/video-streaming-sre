@@ -164,7 +164,12 @@ def attach_audio(
         {"has_external_audio": True, "status": "processing", "progress": 0, "stage": "queued"},
     )
     filename = src.split("/", 1)[1] if "/" in src else src
-    queue.enqueue_transcode_job(job_id=movie_id, s3_key=src, filename=filename)
+    # Fast path: re-package the existing renditions with the new audio (no video
+    # re-encode). The worker falls back to a full transcode if the persisted
+    # renditions aren't available (e.g. a title encoded before this existed).
+    queue.enqueue_transcode_job(
+        job_id=movie_id, s3_key=src, filename=filename, mode="remux_audio"
+    )
     return {"job_id": movie_id, "status": "queued"}
 
 

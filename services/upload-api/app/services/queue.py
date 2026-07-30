@@ -44,18 +44,25 @@ def _ensure_table() -> None:
     client.get_waiter("table_exists").wait(TableName=settings.queue_table)
 
 
-def enqueue_transcode_job(job_id: str, s3_key: str, filename: str) -> None:
+def enqueue_transcode_job(
+    job_id: str, s3_key: str, filename: str, mode: str = "transcode"
+) -> None:
     """Add a transcode job to the durable, DynamoDB-backed queue.
 
     The queue item is keyed by ``job_id`` so a re-enqueue (e.g. admin
     re-transcode) simply overwrites the entry and makes it immediately
     claimable — never a duplicate. ``visible_at`` is the lease clock the worker
     uses for at-least-once delivery; a fresh job is visible right away.
+
+    ``mode`` selects the worker path: ``"transcode"`` (full encode) or
+    ``"remux_audio"`` (re-package existing renditions with an attached audio
+    track — no video re-encode).
     """
     body: dict[str, Any] = {
         "job_id": job_id,
         "s3_key": s3_key,
         "filename": filename,
+        "mode": mode,
         "profiles": ["360p", "720p", "1080p"],
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }

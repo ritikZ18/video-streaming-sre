@@ -232,6 +232,100 @@ def _upload_directory(bucket: str, prefix: str, directory: Path) -> int:
     return count
 
 
+def _download_prefix(bucket: str, prefix: str, dest: Path) -> int:
+    """Download every object under ``prefix`` into ``dest``, preserving the key
+    suffix. Returns the number of files fetched."""
+    client = _s3()
+    count = 0
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            rel = obj["Key"][len(prefix):].lstrip("/")
+            if not rel:
+                continue
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            client.download_file(bucket, obj["Key"], str(out), Config=_DOWNLOAD_CFG)
+            count += 1
+    return count
+
+
+def _persist_renditions(job_id: str, video_sets: list[tuple[str, list[Path]]]) -> None:
+    """Store the encoded rendition MP4s beside the segments (``{job_id}/renditions/``)
+    so a later audio-attach can re-package them WITHOUT re-encoding the video (the
+    fast remux path). Best-effort — never fails the transcode."""
+    settings = get_settings()
+    try:
+        client = _s3()
+        for _codec, paths in video_sets:
+            for p in paths:
+                client.upload_file(
+                    str(p), settings.s3_segments_bucket,
+                    f"{job_id}/renditions/{p.name}",
+                    ExtraArgs={"ContentType": "video/mp4"},
+                )
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("persist_renditions_failed", job_id=job_id, error=str(exc))
+
+
+def _remux_audio(job_id: str, tmpdir: Path) -> bool:
+    """Fast audio-attach: re-package the ALREADY-encoded renditions (persisted at
+    ``{job_id}/renditions/``) with the attached audio muxed in — no video
+    re-encode. Returns False if the renditions or attached audio aren't available,
+    so the caller falls back to a full transcode."""
+    settings = get_settings()
+    ext_key = _find_external_audio(job_id)
+    if not ext_key:
+        logger.info("remux_skip_no_external_audio", job_id=job_id)
+        return False
+
+    rdir = tmpdir / "renditions"
+    rdir.mkdir(parents=True, exist_ok=True)
+    n = _download_prefix(settings.s3_segments_bucket, f"{job_id}/renditions/", rdir)
+    if not n:
+        logger.info("remux_skip_no_persisted_renditions", job_id=job_id)
+        return False
+
+    # Group persisted renditions by codec from their v_{codec}_{name}.mp4 names.
+    by_codec: dict[str, list[Path]] = {}
+    for p in sorted(rdir.glob("v_*.mp4")):
+        parts = p.stem.split("_")
+        codec = parts[1] if len(parts) >= 3 else "h264"
+        by_codec.setdefault(codec, []).append(p)
+    video_sets = [(c, by_codec[c]) for c in ("h264", "hevc") if c in by_codec]
+    if not video_sets:
+        return False
+
+    catalog.update_progress(job_id, 45, stage="audio")
+    dur = probe_duration(video_sets[0][1][0]) or 0.0
+    audio_src = tmpdir / "external_audio"
+    _download_input(settings.s3_segments_bucket, ext_key, audio_src)
+    ap = rdir / "a_ext.mp4"
+    encode_external_audio(audio_src, ap, dur)
+    audio_tracks = [{"path": ap, "language": "und", "label": "Audio"}]
+
+    catalog.update_progress(job_id, 75, stage="package")
+    output_dir = tmpdir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifests = package_cmaf(video_sets, audio_tracks, output_dir)
+
+    catalog.update_progress(job_id, 92, stage="upload")
+    uploaded = _upload_directory(settings.s3_segments_bucket, job_id, output_dir)
+    SEGMENTS_UPLOADED.inc(uploaded)
+
+    base = f"{settings.origin_base_url}/hls/{job_id}"
+    hdr_url = f"{base}/{manifests['hls_hevc'].name}" if manifests.get("hls_hevc") else None
+    catalog.mark_ready(
+        job_id,
+        f"{base}/{manifests['hls'].name}",
+        f"{base}/{manifests['dash'].name}",
+        hdr_manifest_url=hdr_url,
+        audio_tracks=[{"language": "und", "label": "Audio"}],
+    )
+    logger.info("audio_remux_complete", job_id=job_id, renditions=n)
+    return True
+
+
 def _make_cancel_checker(job_id: str):
     """A cheap should_cancel() the encoder can poll every progress line, while
     the underlying DynamoDB read happens at most once every few seconds."""
@@ -296,8 +390,9 @@ def process_message(message: dict[str, Any]) -> None:
     body = json.loads(message["Body"])
     job_id = body["job_id"]
     s3_key = body["s3_key"]
+    mode = body.get("mode", "transcode")
 
-    logger.info("job_start", job_id=job_id, s3_key=s3_key)
+    logger.info("job_start", job_id=job_id, s3_key=s3_key, mode=mode)
 
     started = time.monotonic()
     tmpdir = Path(tempfile.mkdtemp(prefix=f"streamsre-{job_id}-"))
@@ -305,6 +400,27 @@ def process_message(message: dict[str, Any]) -> None:
     output_dir = tmpdir / "output"
 
     try:
+        # Fast path: attach-audio re-packages the persisted renditions with the
+        # new audio (no video re-encode). ANY failure — or missing renditions —
+        # falls through to a full transcode below, so it's always safe.
+        if mode == "remux_audio":
+            remuxed = False
+            try:
+                remuxed = _remux_audio(job_id, tmpdir)
+            except JobCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - fall back to full transcode
+                logger.warning("remux_failed_falling_back", job_id=job_id, error=str(exc)[:300])
+            if remuxed:
+                TRANSCODE_JOBS_TOTAL.labels(status="success").inc()
+                TRANSCODE_JOB_DURATION.observe(time.monotonic() - started)
+                logger.info(
+                    "job_complete", job_id=job_id, mode="remux_audio",
+                    duration_seconds=time.monotonic() - started,
+                )
+                return
+            logger.info("remux_fallback_full_transcode", job_id=job_id)
+
         _download_input(settings.s3_video_bucket, s3_key, input_path)
 
         renditions_dir = tmpdir / "renditions"
@@ -371,6 +487,10 @@ def process_message(message: dict[str, Any]) -> None:
             source_height=source_height, hdr=hdr, gpu_decodable=gpu_decodable,
             on_progress=_cb, should_cancel=should_cancel,
         )
+
+        # Persist the encoded renditions so a later audio-attach can re-package
+        # them WITHOUT re-encoding the video (the fast _remux_audio path).
+        _persist_renditions(job_id, video_sets)
 
         # 2) Every audio track (per language) -> AAC. If the source is SILENT and
         # an admin attached an external track, mux that in instead.
