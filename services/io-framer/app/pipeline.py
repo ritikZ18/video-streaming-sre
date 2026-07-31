@@ -37,6 +37,23 @@ def _guard(info: dict, target_fps: int, s: Settings) -> None:
         raise RuntimeError(f"guardrail: target {target_fps} > {s.interp_max_target_fps}")
 
 
+def _disk_preflight(work: Path, width: int, height: int, n_in: int, n_out: int) -> None:
+    """Fail fast if the scratch volume can't hold the PNG frames. Estimates ~2
+    bytes/pixel per frame (typical photographic PNG after compression) for input +
+    output frames, plus 10% for the source/mezzanine. Skips when the frame counts
+    are unknown (duration missing)."""
+    total_frames = n_in + n_out
+    if total_frames <= 0 or width <= 0 or height <= 0:
+        return
+    needed = int(total_frames * width * height * 2 * 1.1)
+    free = shutil.disk_usage(str(work)).free
+    if needed > free:
+        raise RuntimeError(
+            f"insufficient scratch: ~{needed // (1 << 30)}GiB needed for "
+            f"{total_frames} frames, ~{free // (1 << 30)}GiB free"
+        )
+
+
 def run_pipeline(
     job_id: str,
     movie_id: str,
@@ -64,6 +81,11 @@ def run_pipeline(
         _u(job_id, source_fps=src_fps)
         _guard(info, target_fps, s)
 
+        # Bail before extracting anything if the scratch volume is too small.
+        est_in = round(duration * src_fps) if duration and src_fps else 0
+        est_out = round(duration * target_fps) if duration else 0
+        _disk_preflight(work, info["width"], info["height"], est_in, est_out)
+
         _u(job_id, stage="extracting", progress=20)
         frames_in = work / "in"
         n_in = ffmpeg.extract_frames(str(input_path), str(frames_in), s.interp_timeout_seconds)
@@ -78,7 +100,16 @@ def run_pipeline(
         _u(job_id, stage="interpolating", progress=40)
         frames_out = work / "out"
         frames_out.mkdir(parents=True, exist_ok=True)
-        engine.run_rife(str(frames_in), str(frames_out), num_out, s.interp_timeout_seconds)
+
+        def _rife_progress(done: int, total: int) -> None:
+            # Fold the interpolation into the 40-78% band of the overall bar.
+            if total:
+                _u(job_id, progress=min(78, 40 + int(38 * done / total)))
+
+        engine.run_rife(
+            str(frames_in), str(frames_out), num_out, s.interp_timeout_seconds,
+            on_progress=_rife_progress,
+        )
         produced = len(list(frames_out.glob("*.png")))
 
         _u(job_id, stage="encoding", progress=80)

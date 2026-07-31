@@ -132,8 +132,10 @@ services:
     env_file: .env
     environment:
       <<: *aws-local
-      # --- GPU (optional): uncomment these + the deploy block to run RIFE on the
-      # NVIDIA GPU via Vulkan instead of the lavapipe CPU fallback. ---
+      # --- GPU (opt-in, native Linux): uncomment these + the deploy block to run
+      # RIFE on the NVIDIA GPU via Vulkan. NOTE: on WSL2 this does NOT bind — the
+      # toolkit injects CUDA/NVENC but not the Vulkan ICD, so /healthz still shows
+      # backend=cpu (lavapipe). On a non-GPU host the deploy block breaks `up`. ---
       # NVIDIA_VISIBLE_DEVICES: all
       # NVIDIA_DRIVER_CAPABILITIES: all
     depends_on: *storage-deps

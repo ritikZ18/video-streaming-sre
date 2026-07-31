@@ -158,6 +158,45 @@ takes ~75 s; the GPU path is far faster — uncomment the GPU block in
 `NVIDIA_DRIVER_CAPABILITIES=all` so the NVIDIA Vulkan ICD is visible in the
 container). `/healthz` will then report `backend: vulkan`.
 
+## Operations & hardening
+
+- **Single-flight.** One interpolation pass runs at a time (an async semaphore).
+  The GPU/lavapipe is the bottleneck and must not be oversubscribed; the worker
+  also blocks on the pass before its own NVENC ladder, so RIFE and the encoder
+  never contend for the GTX 1650.
+- **Disk preflight.** Before extracting frames the service estimates the PNG
+  scratch (~2 bytes/pixel × (input + output) frames, +10%) and fails fast with a
+  clear message if the temp volume can't hold it — no half-filled disk.
+- **Hard timeout.** `INTERP_TIMEOUT_SECONDS` (default 1800) is enforced as a
+  wall-clock kill on the rife subprocess (the binary has no self-timeout); the
+  worker polls under the same budget.
+- **Graceful fallback.** Any failure — guardrail, preflight, sidecar error, or an
+  unreachable sidecar — makes the worker publish at the **native** frame rate and
+  record `interp_status = failed/skipped`. A title never fails to transcode
+  because interpolation didn't happen.
+- **Idempotency.** A duplicate `(movie_id, target_fps)` request folds into the
+  in-flight job; the key frees on terminal status so a later re-request restarts.
+- **Scaling caveat.** The current pipeline extracts the *whole* clip to PNG, so
+  scratch scales with pixels × frames. The height (≤1080p) and duration (≤10 min)
+  guardrails plus the preflight bound the worst case; true per-chunk streaming is
+  the next scaling step.
+
+### GPU vs. CPU
+
+`/healthz` reports the bound backend. By default the container uses the Mesa
+**lavapipe** software Vulkan device (`backend: cpu`) — correct but slow, for
+smoke tests. To run on the NVIDIA GPU, uncomment the `NVIDIA_*` env + the `deploy`
+block on the `io-framer` service in `docker-compose.yml` (needs
+`nvidia-container-toolkit`); `/healthz` then reports `backend: vulkan`.
+
+> **WSL2 caveat (this dev box).** The toolkit injects **CUDA/NVENC** (which the
+> transcode worker uses) but **not** the Vulkan ICD, so even with the block
+> enabled `vulkaninfo` sees only lavapipe and `/healthz` stays `backend: cpu` —
+> the service falls back cleanly. Binding the GPU here would need the WSL Vulkan
+> libs (`/usr/lib/wsl/lib` + the NVIDIA ICD) mounted in. On **native Linux** with
+> the toolkit, the block binds `backend: vulkan` directly. lavapipe is the working
+> path on WSL2.
+
 ## Build phases
 
 Each phase is independently shippable and leaves the platform working. Interpolation
@@ -170,7 +209,7 @@ stays behind `INTERP_ENABLED` (off) until Phase 3.
 | **2** | **The service, standalone** ✅ | interpolation works in isolation | scaffold `services/io-framer/` (Dockerfile: Vulkan + rife + ffmpeg, FastAPI); chunked pipeline; in-service guardrails; test via `curl`, verify fps with `ffprobe` — not yet wired to the worker | new service |
 | **3** | **Worker integration** ✅ | real feature behind the flag | worker: ffprobe → guardrails → call service → ladder on the mezzanine → fallback/skip; drives `interp_status`; GPU serialization (encoder vs. interpolator) | worker (+ compose) |
 | **4** | **Admin observability** ✅ | see & trust it | studio shows `interp_status` + reason (observability panel); Prometheus metrics — worker `interp_jobs_total{result}` / `interp_duration_seconds`, sidecar `iof_jobs_total{status}` / `iof_job_duration_seconds` — scraped into Grafana | frontend, worker, service |
-| **5** | **Hardening** | production-ish | disk preflight, progress folded into the existing bar, poison/timeout tuning, README/docs | as needed |
+| **5** | **Hardening** ✅ | production-ish | disk preflight, live interpolation progress, hard rife timeout, graceful fallback, ops docs; GPU wiring documented | service, docs |
 
 ---
 
