@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Upload behaviour
     upload_api_port: int = Field(default=8000, alias="UPLOAD_API_PORT")
     max_upload_size_mb: int = Field(default=5000, alias="MAX_UPLOAD_SIZE_MB")
-    allowed_extensions: str = Field(default="mp4,mov,mkv", alias="ALLOWED_EXTENSIONS")
+    allowed_extensions: str = Field(default="mp4,mov,mkv,webm", alias="ALLOWED_EXTENSIONS")
     rate_limit_per_minute: int = Field(default=60, alias="RATE_LIMIT_PER_MINUTE")
 
     # Origin / playback
