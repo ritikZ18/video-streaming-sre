@@ -558,6 +558,21 @@ export function VideoPlayer({
         fullscreen ? "h-full" : "aspect-video rounded-2xl ring-1 ring-white/10"
       }`}
     >
+      {/* Ambient backdrop — two blurred, scaled covers of the poster fill the
+          letterbox bars with the poster's own colours (soft "ambilight" glow).
+          Skipped in IMAX fill (no bars there) and when there's no poster. */}
+      {poster && !imax && (
+        <>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 scale-[1.35] bg-cover bg-center opacity-70 blur-[64px] saturate-150"
+            style={{ backgroundImage: `url("${poster}")` }}
+          />
+          {/* gentle inward vignette so the crisp poster/video still pops */}
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_38%,rgba(0,0,0,0.55))]" />
+        </>
+      )}
+
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
@@ -565,7 +580,7 @@ export function VideoPlayer({
         poster={poster ?? undefined}
         crossOrigin="anonymous"
         preload="auto"
-        className={`absolute inset-0 h-full w-full bg-black transition-transform duration-200 ${imax ? "object-cover" : "object-contain"}`}
+        className={`absolute inset-0 h-full w-full transition-transform duration-200 ${imax ? "object-cover" : "object-contain"}`}
         style={imax ? { transform: `scale(${imaxZoom})` } : undefined}
         playsInline
       >
