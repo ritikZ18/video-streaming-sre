@@ -130,6 +130,34 @@ transcodes normally at its native frame rate. See the guardrail table in
 
 ---
 
+## Running it (standalone)
+
+Phase 2 ships the service runnable on its own (not yet wired to the worker). It sits
+behind a compose profile, so a normal `docker compose up` leaves it out:
+
+```bash
+# build + start (lavapipe CPU fallback by default)
+docker compose --profile interp up -d --build io-framer
+
+# which backend bound?
+curl -s localhost:8090/healthz
+# {"status":"ok","backend":"cpu","gpu":false,"model":"rife-v4.6","devices":["llvmpipe …"]}
+
+# interpolate a source already in MinIO (24 → 48 fps), then poll
+curl -s -XPOST localhost:8090/interpolate -H 'content-type: application/json' -d '{
+  "movie_id":"demo","target_fps":48,
+  "source":{"s3_bucket":"streamsre-raw-uploads","s3_key":"demo/src.mp4"},
+  "output":{"s3_bucket":"streamsre-raw-uploads","s3_key":"demo/out.mp4"}}'
+curl -s localhost:8090/interpolate/<job_id>
+```
+
+Verified on a 24 → 48 fps clip: `nb_read_frames` doubles (48 → 96) and
+`avg_frame_rate` becomes `48/1`. On the lavapipe CPU fallback a 2 s 320×240 clip
+takes ~75 s; the GPU path is far faster — uncomment the GPU block in
+`docker-compose.yml` (needs `nvidia-container-toolkit` and
+`NVIDIA_DRIVER_CAPABILITIES=all` so the NVIDIA Vulkan ICD is visible in the
+container). `/healthz` will then report `backend: vulkan`.
+
 ## Build phases
 
 Each phase is independently shippable and leaves the platform working. Interpolation
@@ -139,7 +167,7 @@ stays behind `INTERP_ENABLED` (off) until Phase 3.
 |---|-------|---------|-------|---------|
 | **0** | **Flags & contract** ✅ | plumbing, zero behaviour | `INTERP_*` flags in upload-api + worker; `interp_requested / interp_target_fps / interp_status / interp_detail` on `Movie`; this contract | upload-api, worker, docs |
 | **1** | **Toggle + validation** ✅ | end-to-end flag, still no GPU work | upload-form toggle + options; upload-api server-side validation; store fields; worker reads the flag but **no-ops** (logs, publishes normally) | frontend, upload-api, worker |
-| **2** | **The service, standalone** | interpolation works in isolation | scaffold `services/io-framer/` (Dockerfile: Vulkan + rife + ffmpeg, FastAPI); chunked pipeline; in-service guardrails; test via `curl`, verify fps with `ffprobe` — not yet wired to the worker | new service |
+| **2** | **The service, standalone** ✅ | interpolation works in isolation | scaffold `services/io-framer/` (Dockerfile: Vulkan + rife + ffmpeg, FastAPI); chunked pipeline; in-service guardrails; test via `curl`, verify fps with `ffprobe` — not yet wired to the worker | new service |
 | **3** | **Worker integration** | real feature behind the flag | worker: ffprobe → guardrails → call service → ladder on the mezzanine → fallback/skip; publish message notes fps; GPU serialization (encoder vs. interpolator) | worker (+ compose) |
 | **4** | **Admin observability** | see & trust it | studio shows `interp_status` + reason; Prometheus metrics (jobs / duration / skips / failures) → Grafana | frontend, service |
 | **5** | **Hardening** | production-ish | disk preflight, progress folded into the existing bar, poison/timeout tuning, README/docs | as needed |

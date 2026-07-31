@@ -115,6 +115,35 @@ services:
               count: all
               capabilities: [gpu]
 
+  # --- I/O Framer (frame interpolation sidecar) ---
+  # RIFE FPS boost over Vulkan. Standalone in Phase 2 — opt-in via
+  # `docker compose --profile interp up -d io-framer`; the worker wires into it in
+  # a later phase. Defaults to the lavapipe CPU fallback; uncomment the GPU block
+  # to move interpolation onto the NVIDIA GPU.
+  io-framer:
+    build:
+      context: ./services/io-framer
+      dockerfile: Dockerfile
+    container_name: streamsre-io-framer
+    env_file: .env
+    environment:
+      <<: *aws-local
+      # --- GPU (optional): uncomment these + the deploy block to run RIFE on the
+      # NVIDIA GPU via Vulkan instead of the lavapipe CPU fallback. ---
+      # NVIDIA_VISIBLE_DEVICES: all
+      # NVIDIA_DRIVER_CAPABILITIES: all
+    depends_on: *storage-deps
+    ports:
+      - "8090:8000"
+    profiles: ["interp"]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
   # --- Origin (Nginx) ---
   origin:
     build:
