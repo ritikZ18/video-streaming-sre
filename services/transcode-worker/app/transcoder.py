@@ -174,6 +174,20 @@ def encode_external_audio(
     return output_path
 
 
+def reassemble_rendition(playlist_path: Path, output_path: Path) -> bool:
+    """Stream-copy an HLS media playlist's fMP4 segments back into a single MP4
+    (``-c copy``, no re-encode). Used to rebuild a rendition for the audio-remux
+    fast path on titles encoded before renditions were persisted — so remux never
+    has to re-transcode the video."""
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-allowed_extensions", "ALL",
+         "-i", str(playlist_path), "-c", "copy", "-movflags", "+faststart",
+         str(output_path)],
+        capture_output=True, text=True, check=False,
+    )
+    return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+
+
 def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: int) -> bool:
     """Convert one text subtitle stream to a sidecar WebVTT file."""
     cmd = [

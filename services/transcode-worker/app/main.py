@@ -32,6 +32,7 @@ from app.transcoder import (
     package_cmaf,
     probe_duration,
     probe_media,
+    reassemble_rendition,
 )
 from boto3.s3.transfer import TransferConfig
 from botocore.client import BaseClient
@@ -268,39 +269,97 @@ def _persist_renditions(job_id: str, video_sets: list[tuple[str, list[Path]]]) -
         logger.warning("persist_renditions_failed", job_id=job_id, error=str(exc))
 
 
+def _load_persisted_renditions(job_id: str, tmpdir: Path) -> list[tuple[str, list[Path]]] | None:
+    """Rendition MP4s persisted at ``{job_id}/renditions/`` (fastest, known-good),
+    grouped by codec. None if none were stored (a pre-improvement title)."""
+    settings = get_settings()
+    rdir = tmpdir / "renditions"
+    rdir.mkdir(parents=True, exist_ok=True)
+    if not _download_prefix(settings.s3_segments_bucket, f"{job_id}/renditions/", rdir):
+        return None
+    by_codec: dict[str, list[Path]] = {}
+    for p in sorted(rdir.glob("v_*.mp4")):
+        parts = p.stem.split("_")  # v, {codec}, {name}
+        codec = parts[1] if len(parts) >= 3 else "h264"
+        by_codec.setdefault(codec, []).append(p)
+    video_sets = [(c, by_codec[c]) for c in ("h264", "hevc") if c in by_codec]
+    return video_sets or None
+
+
+def _video_variants(master: Path) -> list[tuple[str, str]]:
+    """Parse an HLS master playlist -> [(codec, media_playlist_name), ...] for the
+    VIDEO variants (``#EXT-X-STREAM-INF``; audio ``#EXT-X-MEDIA`` is ignored)."""
+    out: list[tuple[str, str]] = []
+    lines = master.read_text(encoding="utf-8").splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith("#EXT-X-STREAM-INF"):
+            uri = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if uri and not uri.startswith("#"):
+                codec = "hevc" if ("hvc1" in ln or "hev1" in ln) else "h264"
+                out.append((codec, uri))
+    return out
+
+
+def _reassemble_from_segments(job_id: str, tmpdir: Path) -> list[tuple[str, list[Path]]] | None:
+    """Rebuild the renditions from the ALREADY-PUBLISHED HLS segments via stream
+    copy (no re-encode), so audio remux works even for titles encoded before
+    renditions were persisted. Returns None if anything looks off, so the caller
+    safely falls back to a full transcode."""
+    settings = get_settings()
+    dl = tmpdir / "published"
+    dl.mkdir(parents=True, exist_ok=True)
+    if not _download_prefix(settings.s3_segments_bucket, f"{job_id}/", dl):
+        return None
+    master = dl / "master.m3u8"
+    if not master.exists():
+        return None
+    variants = _video_variants(master)
+    hevc_master = dl / "master_hevc.m3u8"
+    if hevc_master.exists():
+        variants += _video_variants(hevc_master)
+    if not variants:
+        return None
+    rdir = tmpdir / "reasm"
+    rdir.mkdir(parents=True, exist_ok=True)
+    by_codec: dict[str, list[Path]] = {}
+    for i, (codec, name) in enumerate(variants):
+        pl = dl / name
+        if not pl.exists():
+            return None
+        out = rdir / f"v_{codec}_{i}.mp4"
+        if not reassemble_rendition(pl, out):
+            logger.warning("reassemble_failed", job_id=job_id, variant=name)
+            return None
+        by_codec.setdefault(codec, []).append(out)
+    video_sets = [(c, by_codec[c]) for c in ("h264", "hevc") if c in by_codec]
+    return video_sets or None
+
+
 def _remux_audio(job_id: str, tmpdir: Path) -> bool:
-    """Fast audio-attach: re-package the ALREADY-encoded renditions (persisted at
-    ``{job_id}/renditions/``) with the attached audio muxed in — no video
-    re-encode. Returns False if the renditions or attached audio aren't available,
-    so the caller falls back to a full transcode."""
+    """Fast audio-attach — mux the attached audio into the EXISTING encoded video
+    with NO re-encode. Uses persisted renditions when available, else rebuilds them
+    from the published segments (stream copy). Returns False if neither the audio
+    nor the renditions are available, so the caller falls back to a full transcode."""
     settings = get_settings()
     ext_key = _find_external_audio(job_id)
     if not ext_key:
         logger.info("remux_skip_no_external_audio", job_id=job_id)
         return False
 
-    rdir = tmpdir / "renditions"
-    rdir.mkdir(parents=True, exist_ok=True)
-    n = _download_prefix(settings.s3_segments_bucket, f"{job_id}/renditions/", rdir)
-    if not n:
-        logger.info("remux_skip_no_persisted_renditions", job_id=job_id)
-        return False
-
-    # Group persisted renditions by codec from their v_{codec}_{name}.mp4 names.
-    by_codec: dict[str, list[Path]] = {}
-    for p in sorted(rdir.glob("v_*.mp4")):
-        parts = p.stem.split("_")
-        codec = parts[1] if len(parts) >= 3 else "h264"
-        by_codec.setdefault(codec, []).append(p)
-    video_sets = [(c, by_codec[c]) for c in ("h264", "hevc") if c in by_codec]
+    video_sets = _load_persisted_renditions(job_id, tmpdir)
+    source = "persisted"
     if not video_sets:
+        video_sets = _reassemble_from_segments(job_id, tmpdir)
+        source = "reassembled"
+    if not video_sets:
+        logger.info("remux_skip_no_renditions", job_id=job_id)
         return False
 
     catalog.update_progress(job_id, 45, stage="audio")
     dur = probe_duration(video_sets[0][1][0]) or 0.0
     audio_src = tmpdir / "external_audio"
     _download_input(settings.s3_segments_bucket, ext_key, audio_src)
-    ap = rdir / "a_ext.mp4"
+    ap = tmpdir / "a_ext.mp4"
     encode_external_audio(audio_src, ap, dur)
     audio_tracks = [{"path": ap, "language": "und", "label": "Audio"}]
 
@@ -322,7 +381,7 @@ def _remux_audio(job_id: str, tmpdir: Path) -> bool:
         hdr_manifest_url=hdr_url,
         audio_tracks=[{"language": "und", "label": "Audio"}],
     )
-    logger.info("audio_remux_complete", job_id=job_id, renditions=n)
+    logger.info("audio_remux_complete", job_id=job_id, source=source, video_sets=len(video_sets))
     return True
 
 
