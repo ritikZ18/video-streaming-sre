@@ -46,6 +46,14 @@ class MovieCreate(MovieBase):
 
 Visibility = Literal["draft", "published", "unlisted"]
 
+# I/O Framer (frame interpolation) lifecycle for a title. None = never requested.
+#   queued     -> an interpolation pass is enqueued
+#   processing -> the I/O Framer sidecar is running
+#   done       -> a higher-fps ladder is published
+#   skipped    -> declined a guardrail (source already high-fps, too long/tall, …)
+#   failed     -> the pass errored; the original ladder is untouched
+InterpStatus = Literal["queued", "processing", "done", "skipped", "failed"]
+
 
 class Movie(MovieBase):
     id: str
@@ -75,6 +83,13 @@ class Movie(MovieBase):
     # worker muxes it only when the source has no embedded audio; survives
     # re-transcodes (stored beside the segments, like custom artwork).
     has_external_audio: bool = False
+    # --- I/O Framer (frame interpolation) — Phase 0: fields only, no behaviour ---
+    # Set when an admin asks to smooth a title to a higher frame rate. The worker
+    # reads these in a later phase; for now they only persist intent + state.
+    interp_requested: bool = False
+    interp_target_fps: int | None = None
+    interp_status: InterpStatus | None = None
+    interp_detail: str | None = None  # human-readable reason for skipped/failed
 
 
 class MoviePatch(BaseModel):

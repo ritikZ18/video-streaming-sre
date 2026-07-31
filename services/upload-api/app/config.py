@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     # Origin / playback
     origin_port: int = Field(default=8080, alias="ORIGIN_PORT")
 
+    # --- I/O Framer (frame interpolation) — Phase 0 plumbing, OFF by default ---
+    # Frames in, interpolated frames out. RIFE (intermediate-flow) FPS boost via
+    # Vulkan, run as a sidecar. These flags gate whether the upload API will even
+    # accept an interpolation request; nothing acts on them yet.
+    interp_enabled: bool = Field(default=False, alias="INTERP_ENABLED")
+    interp_default_target_fps: int = Field(default=60, alias="INTERP_DEFAULT_TARGET_FPS")
+    interp_max_target_fps: int = Field(default=60, alias="INTERP_MAX_TARGET_FPS")
+    interp_max_height: int = Field(default=1080, alias="INTERP_MAX_HEIGHT")
+    interp_max_source_fps: int = Field(default=40, alias="INTERP_MAX_SOURCE_FPS")
+    interp_max_duration_seconds: int = Field(
+        default=600, alias="INTERP_MAX_DURATION_SECONDS"
+    )
+
     @property
     def origin_base_url(self) -> str:
         """Base URL used to construct playback URLs."""
