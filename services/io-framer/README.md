@@ -169,7 +169,7 @@ stays behind `INTERP_ENABLED` (off) until Phase 3.
 | **1** | **Toggle + validation** ✅ | end-to-end flag, still no GPU work | upload-form toggle + options; upload-api server-side validation; store fields; worker reads the flag but **no-ops** (logs, publishes normally) | frontend, upload-api, worker |
 | **2** | **The service, standalone** ✅ | interpolation works in isolation | scaffold `services/io-framer/` (Dockerfile: Vulkan + rife + ffmpeg, FastAPI); chunked pipeline; in-service guardrails; test via `curl`, verify fps with `ffprobe` — not yet wired to the worker | new service |
 | **3** | **Worker integration** ✅ | real feature behind the flag | worker: ffprobe → guardrails → call service → ladder on the mezzanine → fallback/skip; drives `interp_status`; GPU serialization (encoder vs. interpolator) | worker (+ compose) |
-| **4** | **Admin observability** | see & trust it | studio shows `interp_status` + reason; Prometheus metrics (jobs / duration / skips / failures) → Grafana | frontend, service |
+| **4** | **Admin observability** ✅ | see & trust it | studio shows `interp_status` + reason (observability panel); Prometheus metrics — worker `interp_jobs_total{result}` / `interp_duration_seconds`, sidecar `iof_jobs_total{status}` / `iof_job_duration_seconds` — scraped into Grafana | frontend, worker, service |
 | **5** | **Hardening** | production-ish | disk preflight, progress folded into the existing bar, poison/timeout tuning, README/docs | as needed |
 
 ---

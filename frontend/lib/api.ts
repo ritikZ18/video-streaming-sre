@@ -106,6 +106,10 @@ type ApiMovie = {
   subtitle_tracks?: SubtitleTrack[];
   media_info?: MediaInfo | null;
   has_external_audio?: boolean | null;
+  interp_requested?: boolean | null;
+  interp_target_fps?: number | null;
+  interp_status?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
+  interp_detail?: string | null;
   created_at?: string;
 };
 
@@ -200,6 +204,10 @@ export function mapMovie(m: ApiMovie): Movie {
     subtitleTracks: m.subtitle_tracks ?? [],
     mediaInfo: m.media_info ?? null,
     hasExternalAudio: m.has_external_audio ?? false,
+    interpRequested: m.interp_requested ?? false,
+    interpTargetFps: m.interp_target_fps ?? null,
+    interpStatus: m.interp_status ?? null,
+    interpDetail: m.interp_detail ?? null,
   };
 }
 

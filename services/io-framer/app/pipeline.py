@@ -8,6 +8,7 @@ from pathlib import Path
 from app import engine, ffmpeg, s3
 from app.config import Settings, get_settings
 from app.jobs import REGISTRY
+from app.metrics import IOF_JOB_DURATION, IOF_JOBS_TOTAL
 
 
 def _u(job_id: str, **f: object) -> None:
@@ -91,15 +92,19 @@ def run_pipeline(
         _u(job_id, stage="uploading", progress=95)
         s3.upload(out_bucket, out_key, str(out_path))
 
+        elapsed = time.monotonic() - started
         _u(
             job_id, status="done", stage="done", progress=100,
             output={
                 "s3_bucket": out_bucket, "s3_key": out_key,
                 "fps": target_fps, "frames": produced or num_out,
             },
-            elapsed=time.monotonic() - started, gpu=gpu,
+            elapsed=elapsed, gpu=gpu,
         )
+        IOF_JOBS_TOTAL.labels(status="done").inc()
+        IOF_JOB_DURATION.observe(elapsed)
     except Exception as exc:  # noqa: BLE001 - surface as a failed job, never crash
         _u(job_id, status="failed", detail=str(exc)[:400], elapsed=time.monotonic() - started)
+        IOF_JOBS_TOTAL.labels(status="failed").inc()
     finally:
         shutil.rmtree(work, ignore_errors=True)

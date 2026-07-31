@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film } from "lucide-react";
+import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 
@@ -51,6 +51,15 @@ function StatCard({
   );
 }
 
+// I/O Framer interpolation status → pill styling.
+const interpPill: Record<string, string> = {
+  queued: "text-white/60 border-white/15 bg-white/5",
+  processing: "text-sky-300 border-sky-400/30 bg-sky-400/10",
+  done: "text-emerald-300 border-emerald-400/30 bg-emerald-400/10",
+  skipped: "text-amber-300 border-amber-400/30 bg-amber-400/10",
+  failed: "text-rose-300 border-rose-400/30 bg-rose-400/10",
+};
+
 const eventColor: Record<string, string> = {
   startup: "text-sky-300 border-sky-400/30 bg-sky-400/10",
   rebuffer: "text-amber-300 border-amber-400/30 bg-amber-400/10",
@@ -99,6 +108,11 @@ export function AdminObservability() {
   // re-segmenting of titles that already have a (still-playable) manifest.
   const encoding = useMemo(
     () => movies.filter((m) => m.status === "processing"),
+    [movies],
+  );
+  // Titles with any frame-interpolation activity (I/O Framer): request + state.
+  const interpJobs = useMemo(
+    () => movies.filter((m) => m.interpStatus),
     [movies],
   );
 
@@ -219,6 +233,48 @@ export function AdminObservability() {
           </ul>
         )}
       </div>
+
+      {/* Frame interpolation — I/O Framer status + reason per title */}
+      {interpJobs.length > 0 && (
+        <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+          <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+            <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+              <Sparkles className="h-3.5 w-3.5" /> Frame interpolation · I/O Framer
+            </span>
+            <span className="tabular-nums text-[11px] text-white/40">
+              {interpJobs.filter((m) => m.interpStatus === "processing").length} active
+            </span>
+          </div>
+          <ul className="divide-y divide-white/[0.06]">
+            {interpJobs.map((m) => (
+              <li key={m.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                <span className="min-w-0 flex-1 truncate text-white">{m.title}</span>
+                {m.interpTargetFps ? (
+                  <span className="whitespace-nowrap text-[11px] tabular-nums text-white/45">
+                    → {m.interpTargetFps} fps
+                  </span>
+                ) : null}
+                {m.interpDetail ? (
+                  <span
+                    className="hidden max-w-[260px] truncate text-[11px] text-white/40 sm:inline"
+                    title={m.interpDetail}
+                  >
+                    {m.interpDetail}
+                  </span>
+                ) : null}
+                <span
+                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold capitalize ${
+                    interpPill[m.interpStatus ?? "queued"] ?? interpPill.queued
+                  }`}
+                >
+                  {m.interpStatus === "processing" && <Loader2 className="h-3 w-3 animate-spin" />}
+                  {m.interpStatus}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {empty && (
         <p className="mt-4 rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-white/50">

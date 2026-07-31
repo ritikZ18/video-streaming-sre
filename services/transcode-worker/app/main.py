@@ -14,6 +14,8 @@ import structlog
 from app import catalog, jobqueue
 from app.config import get_settings
 from app.metrics import (
+    INTERP_DURATION,
+    INTERP_JOBS_TOTAL,
     QUEUE_DEPTH,
     SEGMENTS_UPLOADED,
     TRANSCODE_JOB_DURATION,
@@ -522,6 +524,7 @@ def _maybe_interpolate(
         return input_path, media, False
     if not settings.interp_enabled:
         catalog.update_interp(job_id, "skipped", detail="interpolation disabled on worker")
+        INTERP_JOBS_TOTAL.labels(result="skipped").inc()
         return input_path, media, False
 
     target = int(body.get("interp_target_fps") or settings.interp_max_target_fps)
@@ -531,21 +534,26 @@ def _maybe_interpolate(
     if reason:
         logger.info("interp_skipped", job_id=job_id, reason=reason, target_fps=target)
         catalog.update_interp(job_id, "skipped", detail=reason)
+        INTERP_JOBS_TOTAL.labels(result="skipped").inc()
         return input_path, media, False
 
     catalog.update_interp(job_id, "processing")
     logger.info("interp_start", job_id=job_id, target_fps=target, source_fps=round(src_fps, 2))
     mezz_key = f"{job_id}/interpolated.mp4"
+    interp_started = time.monotonic()
     try:
         _call_io_framer(job_id, body["s3_key"], target, mezz_key, emit)
         mezz_path = tmpdir / "mezzanine.mp4"
         _download_input(settings.s3_video_bucket, mezz_key, mezz_path)
         video_media = probe_media(mezz_path)
+        INTERP_JOBS_TOTAL.labels(result="done").inc()
+        INTERP_DURATION.observe(time.monotonic() - interp_started)
         logger.info("interp_done", job_id=job_id, target_fps=target)
         return mezz_path, video_media, True
     except Exception as exc:  # noqa: BLE001 - fall back to the native source
         logger.warning("interp_failed_falling_back", job_id=job_id, error=str(exc)[:300])
         catalog.update_interp(job_id, "failed", detail=str(exc)[:200])
+        INTERP_JOBS_TOTAL.labels(result="failed").inc()
         return input_path, media, False
     finally:
         # The S3 mezzanine is just transport between the sidecar and us; drop it

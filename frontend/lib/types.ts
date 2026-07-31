@@ -62,4 +62,9 @@ export type Movie = {
   mediaInfo?: MediaInfo | null;
   /** True once an admin attached an external audio track to a silent title. */
   hasExternalAudio?: boolean;
+  /** Frame interpolation (I/O Framer) lifecycle + request. */
+  interpRequested?: boolean;
+  interpTargetFps?: number | null;
+  interpStatus?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
+  interpDetail?: string | null;
 };

@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app import engine
 from app.config import get_settings
@@ -31,6 +32,12 @@ app = FastAPI(title="I/O Framer", version="0.2.0")
 # not be oversubscribed. Held for the whole decode→RIFE→encode pass.
 _SEM = asyncio.Semaphore(1)
 _TASKS: set[asyncio.Task] = set()
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    """Prometheus exposition. Scraped by the `io-framer` job in prometheus.yml."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/healthz", response_model=Health)
