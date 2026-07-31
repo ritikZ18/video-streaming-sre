@@ -95,9 +95,10 @@ export function AdminObservability() {
     () => new Map(movies.map((m) => [m.id, m.title] as const)),
     [movies],
   );
-  // Titles still encoding (processing, no playable manifest yet).
+  // Titles the worker is actively encoding — including re-encodes / audio
+  // re-segmenting of titles that already have a (still-playable) manifest.
   const encoding = useMemo(
-    () => movies.filter((m) => m.status === "processing" && !m.manifestUrl),
+    () => movies.filter((m) => m.status === "processing"),
     [movies],
   );
 

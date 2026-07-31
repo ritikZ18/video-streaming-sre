@@ -13,6 +13,7 @@ import {
   Clock,
   Eye,
   Music,
+  Play,
 } from "lucide-react";
 import type { Movie } from "../../lib/types";
 import {
@@ -187,13 +188,26 @@ export function AdminCatalog() {
                     <td className="px-4 py-2.5"><VisChip v={m.visibility} /></td>
                     <td className="px-4 py-2.5 font-mono text-[12px] text-white/60">{q}</td>
                     <td className="px-4 py-2.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(m)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-white/80 hover:bg-white/10"
-                      >
-                        <Pencil className="h-3 w-3" /> Edit
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        {m.manifestUrl && (
+                          <a
+                            href={`/player?id=${encodeURIComponent(m.id)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Preview in a new tab"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-500/15 px-2.5 py-1 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-500/25"
+                          >
+                            <Play className="h-3 w-3 fill-current" /> Play
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setEditing(m)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-white/80 hover:bg-white/10"
+                        >
+                          <Pencil className="h-3 w-3" /> Edit
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
