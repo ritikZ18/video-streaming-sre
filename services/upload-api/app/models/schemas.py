@@ -109,6 +109,18 @@ class MoviePatch(BaseModel):
     backdrop_url: str | None = None
 
 
+class InterpConfig(BaseModel):
+    """Public read of the I/O Framer feature flag + guardrails, so the upload UI
+    can show/hide the toggle and label the caps. No secrets."""
+
+    enabled: bool
+    default_target_fps: int
+    max_target_fps: int
+    max_height: int
+    max_source_fps: int
+    max_duration_seconds: int
+
+
 class MovieList(BaseModel):
     movies: list[Movie] = Field(default_factory=list)
 

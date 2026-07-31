@@ -127,7 +127,29 @@ export type MovieCreatePayload = {
   description?: string;
   tag?: string;
   manifest_url?: string;
+  // I/O Framer (frame interpolation) — opt-in per upload.
+  interp?: boolean;
+  interp_target_fps?: number;
 };
+
+// I/O Framer feature flag + guardrails (public read).
+export type InterpConfig = {
+  enabled: boolean;
+  default_target_fps: number;
+  max_target_fps: number;
+  max_height: number;
+  max_source_fps: number;
+  max_duration_seconds: number;
+};
+
+/** Read the interpolation feature flag + caps so the upload UI can show the
+ *  toggle only when the server has it enabled. Best-effort (never throws in the
+ *  caller path — treat a rejection as "disabled"). */
+export async function getInterpConfig(): Promise<InterpConfig> {
+  const res = await fetch(`${API_URL}/api/v1/interp/config`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`interp config failed: ${res.status}`);
+  return (await res.json()) as InterpConfig;
+}
 
 // ---- Gradient synthesis (uploaded videos have no artwork) ----
 

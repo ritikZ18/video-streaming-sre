@@ -453,6 +453,17 @@ def process_message(message: dict[str, Any]) -> None:
 
     logger.info("job_start", job_id=job_id, s3_key=s3_key, mode=mode)
 
+    # I/O Framer (frame interpolation) — Phase 1 no-op. The flag is threaded
+    # through the queue and acknowledged here, but the sidecar is not wired yet,
+    # so the title still publishes at its native frame rate.
+    if body.get("interp"):
+        logger.info(
+            "interp_requested_noop",
+            job_id=job_id,
+            target_fps=body.get("interp_target_fps"),
+            note="phase 1: engine not wired — publishing at native fps",
+        )
+
     started = time.monotonic()
     tmpdir = Path(tempfile.mkdtemp(prefix=f"streamsre-{job_id}-"))
     input_path = tmpdir / "input"

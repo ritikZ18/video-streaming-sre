@@ -45,7 +45,12 @@ def _ensure_table() -> None:
 
 
 def enqueue_transcode_job(
-    job_id: str, s3_key: str, filename: str, mode: str = "transcode"
+    job_id: str,
+    s3_key: str,
+    filename: str,
+    mode: str = "transcode",
+    interp: bool = False,
+    interp_target_fps: int | None = None,
 ) -> None:
     """Add a transcode job to the durable, DynamoDB-backed queue.
 
@@ -57,6 +62,10 @@ def enqueue_transcode_job(
     ``mode`` selects the worker path: ``"transcode"`` (full encode) or
     ``"remux_audio"`` (re-package existing renditions with an attached audio
     track — no video re-encode).
+
+    ``interp`` asks the worker to run frame interpolation (I/O Framer) to
+    ``interp_target_fps`` before the ladder. In Phase 1 the worker only logs this;
+    it is wired to the sidecar in a later phase.
     """
     body: dict[str, Any] = {
         "job_id": job_id,
@@ -66,6 +75,9 @@ def enqueue_transcode_job(
         "profiles": ["360p", "720p", "1080p"],
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }
+    if interp:
+        body["interp"] = True
+        body["interp_target_fps"] = interp_target_fps
     now = int(time.time())
     item = {
         "job_id": job_id,
