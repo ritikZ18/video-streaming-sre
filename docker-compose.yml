@@ -105,7 +105,12 @@ services:
       # GPU encode: set USE_NVENC=1 AFTER installing nvidia-container-toolkit on
       # the host and uncommenting the `deploy.resources` block below.
       USE_NVENC: ${USE_NVENC:-0}
-    depends_on: *storage-deps
+    depends_on:
+      <<: *storage-deps
+      # Start the interpolation sidecar first; the worker calls it per job when
+      # interpolation is requested, and falls back to native fps if it is down.
+      io-framer:
+        condition: service_started
     # --- GPU (optional): uncomment once nvidia-container-toolkit is installed ---
     deploy:
       resources:
@@ -116,10 +121,9 @@ services:
               capabilities: [gpu]
 
   # --- I/O Framer (frame interpolation sidecar) ---
-  # RIFE FPS boost over Vulkan. Standalone in Phase 2 — opt-in via
-  # `docker compose --profile interp up -d io-framer`; the worker wires into it in
-  # a later phase. Defaults to the lavapipe CPU fallback; uncomment the GPU block
-  # to move interpolation onto the NVIDIA GPU.
+  # RIFE FPS boost over Vulkan. The worker calls it per job when interpolation is
+  # requested. Defaults to the lavapipe CPU fallback; uncomment the GPU block to
+  # move interpolation onto the NVIDIA GPU (needs nvidia-container-toolkit).
   io-framer:
     build:
       context: ./services/io-framer
@@ -135,7 +139,6 @@ services:
     depends_on: *storage-deps
     ports:
       - "8090:8000"
-    profiles: ["interp"]
     # deploy:
     #   resources:
     #     reservations:

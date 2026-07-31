@@ -84,6 +84,29 @@ def extract_thumbnail(input_path: Path, output_path: Path, at_seconds: float = 3
     return result.returncode == 0 and output_path.exists()
 
 
+def probe_fps(input_path: Path) -> float:
+    """Average frame rate of the first video stream (0.0 if unknown). Used by the
+    interpolation guardrails (skip a source that is already high-fps)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=avg_frame_rate", "-of", "default=nk=1:nw=1",
+         str(input_path)],
+        capture_output=True, text=True, check=False,
+    )
+    raw = (result.stdout or "").strip()
+    if "/" in raw:
+        num, den = raw.split("/", 1)
+        try:
+            d = float(den)
+            return float(num) / d if d else 0.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
 def probe_media(input_path: Path) -> dict[str, Any]:
     """Full ffprobe (the 'VLC' metadata): video + audio tracks + subtitle tracks."""
     result = subprocess.run(

@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from app.transcoder import (
     is_hdr,
     package_cmaf,
     probe_duration,
+    probe_fps,
     probe_media,
     reassemble_rendition,
 )
@@ -443,6 +445,117 @@ def _drop_poison_message(message: dict[str, Any], receipt_handle: str, receives:
     _delete_message(receipt_handle)
 
 
+def _interp_skip_reason(
+    settings: Any, height: int, duration: float, src_fps: float, target: int, hdr: bool
+) -> str | None:
+    """Return why interpolation should be skipped for this source, or None to
+    proceed. Mirrors the sidecar's guardrails (defence in depth)."""
+    if hdr:
+        return "HDR source (interpolation would drop HDR)"
+    if height and height > settings.interp_max_height:
+        return f"height {height} > {settings.interp_max_height}"
+    if duration and duration > settings.interp_max_duration_seconds:
+        return f"duration {duration:.0f}s > {settings.interp_max_duration_seconds}s"
+    if src_fps and src_fps >= settings.interp_max_source_fps:
+        return f"source already {src_fps:.0f}fps (>= {settings.interp_max_source_fps})"
+    if src_fps and target <= src_fps:
+        return f"target {target} <= source {src_fps:.0f}fps"
+    if target > settings.interp_max_target_fps:
+        return f"target {target} > {settings.interp_max_target_fps}"
+    return None
+
+
+def _call_io_framer(job_id: str, s3_key: str, target_fps: int, out_key: str, emit) -> None:
+    """POST to the I/O Framer sidecar and poll to completion. Raises on failure,
+    timeout, or an unreachable sidecar so the caller can fall back to native fps."""
+    settings = get_settings()
+    base = settings.interp_service_url.rstrip("/")
+    payload = json.dumps(
+        {
+            "movie_id": job_id,
+            "target_fps": target_fps,
+            "source": {"s3_bucket": settings.s3_video_bucket, "s3_key": s3_key},
+            "output": {"s3_bucket": settings.s3_video_bucket, "s3_key": out_key},
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{base}/interpolate", data=payload,
+        headers={"content-type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        interp_job = json.loads(resp.read().decode())["job_id"]
+
+    deadline = time.monotonic() + settings.interp_timeout_seconds
+    while time.monotonic() < deadline:
+        with urllib.request.urlopen(f"{base}/interpolate/{interp_job}", timeout=30) as resp:
+            st = json.loads(resp.read().decode())
+        status = st.get("status")
+        if status == "done":
+            return
+        if status == "failed":
+            raise RuntimeError(f"io-framer: {st.get('detail') or 'failed'}")
+        # Fold the sidecar's 0-100 into a small slice (5-18%) of the overall bar.
+        emit(min(18, 5 + int(0.13 * (st.get("progress") or 0))), "interpolating")
+        time.sleep(3)
+    raise RuntimeError("io-framer timed out")
+
+
+def _maybe_interpolate(
+    job_id: str,
+    body: dict[str, Any],
+    input_path: Path,
+    media: dict[str, Any],
+    seconds: float,
+    tmpdir: Path,
+    emit,
+) -> tuple[Path, dict[str, Any], bool]:
+    """If interpolation was requested and passes the guardrails, produce a
+    higher-fps mezzanine via the I/O Framer sidecar and return it as the VIDEO
+    source (audio/subtitles/thumbnail stay sourced from the original, which the
+    mezzanine does not carry). Never raises — records interp_status and falls back
+    to the native source on any problem.
+
+    Returns ``(video_input, video_media, interp_ok)``.
+    """
+    settings = get_settings()
+    if not body.get("interp"):
+        return input_path, media, False
+    if not settings.interp_enabled:
+        catalog.update_interp(job_id, "skipped", detail="interpolation disabled on worker")
+        return input_path, media, False
+
+    target = int(body.get("interp_target_fps") or settings.interp_max_target_fps)
+    height = int((media.get("video") or {}).get("height") or 0)
+    src_fps = probe_fps(input_path)
+    reason = _interp_skip_reason(settings, height, seconds, src_fps, target, is_hdr(media))
+    if reason:
+        logger.info("interp_skipped", job_id=job_id, reason=reason, target_fps=target)
+        catalog.update_interp(job_id, "skipped", detail=reason)
+        return input_path, media, False
+
+    catalog.update_interp(job_id, "processing")
+    logger.info("interp_start", job_id=job_id, target_fps=target, source_fps=round(src_fps, 2))
+    mezz_key = f"{job_id}/interpolated.mp4"
+    try:
+        _call_io_framer(job_id, body["s3_key"], target, mezz_key, emit)
+        mezz_path = tmpdir / "mezzanine.mp4"
+        _download_input(settings.s3_video_bucket, mezz_key, mezz_path)
+        video_media = probe_media(mezz_path)
+        logger.info("interp_done", job_id=job_id, target_fps=target)
+        return mezz_path, video_media, True
+    except Exception as exc:  # noqa: BLE001 - fall back to the native source
+        logger.warning("interp_failed_falling_back", job_id=job_id, error=str(exc)[:300])
+        catalog.update_interp(job_id, "failed", detail=str(exc)[:200])
+        return input_path, media, False
+    finally:
+        # The S3 mezzanine is just transport between the sidecar and us; drop it
+        # once local (a no-op if it was never produced).
+        try:
+            _s3().delete_object(Bucket=settings.s3_video_bucket, Key=mezz_key)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def process_message(message: dict[str, Any]) -> None:
     """Process a single SQS message containing a transcode job."""
     settings = get_settings()
@@ -452,17 +565,6 @@ def process_message(message: dict[str, Any]) -> None:
     mode = body.get("mode", "transcode")
 
     logger.info("job_start", job_id=job_id, s3_key=s3_key, mode=mode)
-
-    # I/O Framer (frame interpolation) — Phase 1 no-op. The flag is threaded
-    # through the queue and acknowledged here, but the sidecar is not wired yet,
-    # so the title still publishes at its native frame rate.
-    if body.get("interp"):
-        logger.info(
-            "interp_requested_noop",
-            job_id=job_id,
-            target_fps=body.get("interp_target_fps"),
-            note="phase 1: engine not wired — publishing at native fps",
-        )
 
     started = time.monotonic()
     tmpdir = Path(tempfile.mkdtemp(prefix=f"streamsre-{job_id}-"))
@@ -522,18 +624,27 @@ def process_message(message: dict[str, Any]) -> None:
         _emit(4, "download")
         _ck()
 
+        # Frame interpolation (I/O Framer): if requested + guardrails pass, swap in
+        # a higher-fps mezzanine as the VIDEO source. Audio, subtitles and the
+        # thumbnail stay sourced from the original (the mezzanine carries neither).
+        # Never raises — falls back to the native source and records interp_status.
+        video_input, video_media, interp_ok = _maybe_interpolate(
+            job_id, body, input_path, media, seconds, tmpdir, _emit
+        )
+        _ck()
+
         # 1) All video renditions in a SINGLE decode pass (GPU: decode once ->
         # scale_cuda per rendition -> nvenc). The ladder is chosen by the source
         # height, so a 4K/60 source produces up to 2160p (nothing is upscaled).
-        _v = media.get("video") or {}
+        _v = video_media.get("video") or {}
         _w, _h = int(_v.get("width") or 0), int(_v.get("height") or 0)
         # Pick the ladder by the source's WIDTH-class so wide/letterboxed "4K"
         # trailers (e.g. 2560x1350, only 1350 tall) aren't capped at 1080p — a
         # 2560-wide source is 1440p-class. Renditions scale preserving aspect, so
         # nothing is upscaled or distorted.
         source_height = max(_h, round(_w * 9 / 16))
-        hdr = is_hdr(media)
-        gpu_decodable = can_nvdec_decode(media)
+        hdr = is_hdr(video_media)
+        gpu_decodable = can_nvdec_decode(video_media)
         names = [p.name for p in ladder_for(source_height)]
         lo, hi = 5, 78
 
@@ -553,7 +664,7 @@ def process_message(message: dict[str, Any]) -> None:
         # gpu_decodable=False (AV1 / 10-bit H.264) skips the doomed full-GPU pass.
         # Returns [(codec, [rung paths]), ...].
         video_sets = encode_ladder(
-            input_path, renditions_dir, seconds,
+            video_input, renditions_dir, seconds,
             source_height=source_height, hdr=hdr, gpu_decodable=gpu_decodable,
             on_progress=_cb, should_cancel=should_cancel,
         )
@@ -636,6 +747,9 @@ def process_message(message: dict[str, Any]) -> None:
             subtitle_tracks=subtitle_tracks,
             media_info=media_info,
         )
+        # A higher-fps ladder is now published — close out the interpolation state.
+        if interp_ok:
+            catalog.update_interp(job_id, "done")
         logger.info(
             "manifests_generated",
             job_id=job_id,
