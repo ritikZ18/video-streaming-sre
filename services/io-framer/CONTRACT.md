@@ -5,7 +5,8 @@
 > itself is built in a later phase. Nothing in the platform calls it yet.
 >
 > For the *why/how* (RIFE mechanism, why Vulkan, the CPU path), the architecture
-> diagram, and the full phase plan, see [README.md](./README.md).
+> diagram, and the full phase plan, see [README.md](./README.md). The planned
+> Real-ESRGAN upscaling capability (`/upscale`) is specced in [UPSCALING.md](./UPSCALING.md).
 
 - **Container:** `streamsre-io-framer` · listens on `:8000` (compose network name `io-framer`)
 - **Engine:** `rife-ncnn-vulkan` (C++/Vulkan binary) wrapped by a small FastAPI orchestrator

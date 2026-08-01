@@ -1,8 +1,9 @@
 # I/O Framer
 
-> **Frames in, interpolated frames out.** A plug-and-play sidecar that boosts a
-> title's frame rate (e.g. 24/30 → 60 fps) with **RIFE** neural frame
-> interpolation running on **Vulkan** — no CUDA, no NVENC/NVDEC dependency.
+> **Frames in, better frames out.** A plug-and-play sidecar that makes a title
+> **smoother** (RIFE frame interpolation, 24/30 → 60 fps) and — _in progress_ —
+> **sharper** (Real-ESRGAN upscaling, ×2/×4). Both are neural, per-frame, and run
+> on **Vulkan** — no CUDA, no NVENC/NVDEC dependency.
 
 I/O Framer is a **pre-processing** step, not part of the streaming path. The
 transcode worker hands it a source clip, gets back a *mezzanine* (the same clip at
@@ -17,15 +18,19 @@ just receive a smoother master.
 
 ---
 
-## Scope — what it does (and what it doesn't)
+## Scope — two transforms
 
-**Does:** raise a title's **frame rate** — motion interpolation (e.g. 24/30 fps →
-48/60 fps) so playback looks smoother. That is the *only* thing I/O Framer does.
+I/O Framer runs two orthogonal, per-frame neural transforms; a title can want either
+or both:
 
-**Does not:** it does **not** upscale resolution or "increase quality" — there is no
-super-resolution, sharpening, or denoise. A 720p source stays 720p; only the frame
-rate changes. An upscaler (e.g. Real-ESRGAN — the ncnn/Vulkan sibling of RIFE) would
-be a **separate** feature and is not built.
+- **Frame rate — _shipping_.** RIFE interpolation raises fps (24/30 → 48/60) so motion
+  looks smoother. Resolution is unchanged. (Documented below.)
+- **Quality / resolution — _in progress_.** Real-ESRGAN upscaling raises resolution
+  and detail (×2/×4) so a soft / low-res source looks sharper. Frame rate is
+  unchanged. See **[UPSCALING.md](./UPSCALING.md)** for the how / contract / phase map.
+
+They stay independent: interpolation never changes resolution; upscaling never
+changes fps. Everything below documents the shipping **interpolation** path.
 
 ## Using it (admin studio)
 
