@@ -199,10 +199,14 @@ def interpolate_movie(
     target_fps: int | None = Body(default=None, embed=True),
     _admin: str = Depends(require_admin),
 ) -> dict[str, str]:
-    """Boost an existing title's frame rate: re-transcode from the original source
-    with frame interpolation (I/O Framer). Requires the source still in S3. The
-    worker re-checks the guardrails and skips (recording a reason) if the source is
-    already high-fps / too tall / too long / HDR."""
+    """Add a NON-destructive smoothed (frame-interpolated) rendition to a title.
+
+    The interpolated ladder is published to a separate ``{id}/interp/`` prefix and
+    linked onto the title via ``interp_manifest_url``; the original manifest and the
+    title's ``ready`` status are left untouched, so it stays watchable throughout and
+    the player exposes the result as a "Smooth" toggle. Requires the source still in
+    S3. The worker re-checks the guardrails and skips (recording a reason) if the
+    source is already high-fps / too tall / too long / HDR."""
     settings = get_settings()
     if not settings.interp_enabled:
         raise HTTPException(
@@ -214,7 +218,7 @@ def interpolate_movie(
     if not key:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Original source is no longer stored — re-upload to boost fps.",
+            detail="Original source is no longer stored — re-upload to smooth it.",
         )
     target = target_fps or settings.interp_default_target_fps
     if target < 1 or target > settings.interp_max_target_fps:
@@ -223,17 +227,18 @@ def interpolate_movie(
             detail=f"target_fps must be between 1 and {settings.interp_max_target_fps}",
         )
     filename = key.split("/", 1)[1] if "/" in key else key
+    # Non-destructive: the title stays ready/playable; only the interp lifecycle
+    # moves. The worker sets interp_manifest_url when the variant is published.
     catalog.update_fields(
         movie_id,
         {
-            "status": "processing", "progress": 0, "stage": "queued",
             "interp_requested": True, "interp_target_fps": target,
             "interp_status": "queued",
         },
     )
     queue.enqueue_transcode_job(
         job_id=movie_id, s3_key=key, filename=filename,
-        interp=True, interp_target_fps=target,
+        interp=True, interp_target_fps=target, interp_variant=True,
     )
     return {"job_id": movie_id, "status": "queued"}
 

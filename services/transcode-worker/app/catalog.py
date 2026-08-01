@@ -61,6 +61,7 @@ def _update(
     audio_tracks: list | None = None,
     subtitle_tracks: list | None = None,
     media_info: dict | None = None,
+    storyboard_url: str | None = None,
 ) -> None:
     expr = "SET #s = :s, manifest_url = :m, dash_url = :d, #p = :p, #stg = :stg"
     names = {"#s": "status", "#p": "progress", "#stg": "stage"}
@@ -74,6 +75,9 @@ def _update(
     if hdr_manifest_url:
         expr += ", hdr_manifest_url = :h"
         values[":h"] = hdr_manifest_url
+    if storyboard_url:
+        expr += ", storyboard_url = :sb"
+        values[":sb"] = storyboard_url
     if duration:
         # "duration" is a DynamoDB reserved word, so alias it.
         expr += ", #dur = :dur"
@@ -206,6 +210,57 @@ def update_interp(movie_id: str, status: str, detail: str | None = None) -> None
         logger.warning("catalog_interp_update_skipped", movie_id=movie_id, error=str(exc))
 
 
+def set_interp_variant(
+    movie_id: str, manifest_url: str, dash_url: str, fps: int
+) -> None:
+    """Attach a NON-destructive smoothed (interpolated) rendition to a title.
+
+    Sets ``interp_manifest_url`` / ``interp_dash_url`` / ``interp_fps`` and flips
+    ``interp_status`` to done WITHOUT touching the title's own manifest_url/status
+    — the original ladder stays intact and the player offers a Smooth toggle."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression=(
+                "SET interp_manifest_url = :m, interp_dash_url = :d, "
+                "interp_fps = :f, interp_status = :s REMOVE interp_detail"
+            ),
+            ExpressionAttributeValues={
+                ":m": manifest_url,
+                ":d": dash_url,
+                ":f": int(fps),
+                ":s": "done",
+            },
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - variant state is non-critical
+        logger.warning("catalog_set_interp_variant_skipped", movie_id=movie_id, error=str(exc))
+
+
+def update_interp_progress(
+    movie_id: str, progress: int, stage: str, started_at: float | None = None
+) -> None:
+    """Best-effort live progress for a running interpolation: the I/O Framer
+    sidecar's own 0-100 + stage (extracting/interpolating/encoding), so the UI can
+    show a real percentage + ETA instead of a bare 'processing'. ``started_at``
+    (epoch seconds, set once at the start of the pass) anchors the elapsed/ETA
+    clock. Never raises; a missing row (canceled/deleted) is silently ignored."""
+    try:
+        expr = "SET interp_progress = :p, interp_stage = :st"
+        values: dict[str, object] = {":p": int(progress), ":st": stage}
+        if started_at is not None:
+            expr += ", interp_started_at = :sa"
+            values[":sa"] = int(started_at)
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression=expr,
+            ExpressionAttributeValues=values,
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - progress is non-critical
+        logger.warning("catalog_interp_progress_skipped", movie_id=movie_id, error=str(exc))
+
+
 def mark_ready(
     movie_id: str,
     manifest_url: str,
@@ -216,6 +271,7 @@ def mark_ready(
     audio_tracks: list | None = None,
     subtitle_tracks: list | None = None,
     media_info: dict | None = None,
+    storyboard_url: str | None = None,
 ) -> None:
     """Flip the catalog entry for this job to ready and attach its manifest URLs,
     duration, thumbnail, audio/subtitle track lists and media metadata.
@@ -233,6 +289,7 @@ def mark_ready(
         "audio_tracks": audio_tracks,
         "subtitle_tracks": subtitle_tracks,
         "media_info": media_info,
+        "storyboard_url": storyboard_url,
     }
     try:
         _update(movie_id, manifest_url, dash_url, **kw)

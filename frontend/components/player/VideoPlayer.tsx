@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Hls from "hls.js";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -16,6 +16,9 @@ import {
   Gauge,
   Languages,
   Captions,
+  Rewind,
+  FastForward,
+  Sparkles,
 } from "lucide-react";
 import { sendBeacon, type BeaconEvent } from "../../lib/api";
 import type { SubtitleTrack } from "../../lib/types";
@@ -26,11 +29,54 @@ type VideoPlayerProps = {
   title?: string | null;
   contentId?: string | null;
   subtitleTracks?: SubtitleTrack[];
+  /** WebVTT storyboard (hover-scrub sprite map) served beside the manifest. */
+  storyboardUrl?: string | null;
+  /** Optional smoothed (interpolated) rendition for the "Smooth" toggle. */
+  interpSrc?: string | null;
+  /** Target fps of the smoothed rendition (labels the toggle). */
+  interpFps?: number | null;
 };
 
 type Level = { index: number; height: number };
 type AudioOpt = { index: number; label: string };
 type Menu = null | "quality" | "audio" | "captions" | "speed";
+
+// One storyboard cell: a time range + its rectangle in the sprite sheet.
+type StoryCue = { start: number; end: number; x: number; y: number; w: number; h: number };
+type Storyboard = { sprite: string; cues: StoryCue[] };
+
+/** Parse a WebVTT storyboard (cues of `sprite.jpg#xywh=x,y,w,h`) into cells,
+ *  resolving the sprite URL relative to the VTT. Returns null if it has no cues. */
+function parseStoryboard(text: string, vttUrl: string): Storyboard | null {
+  const lines = text.split(/\r?\n/);
+  const cues: StoryCue[] = [];
+  let sprite = "";
+  const ts = (s: string): number =>
+    s.trim().split(":").reduce((acc, part) => acc * 60 + parseFloat(part), 0);
+  for (let i = 0; i < lines.length; i += 1) {
+    const arrow = lines[i].indexOf("-->");
+    if (arrow === -1) continue;
+    const start = ts(lines[i].slice(0, arrow));
+    const end = ts(lines[i].slice(arrow + 3));
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j += 1;
+    const ref = (lines[j] ?? "").trim();
+    const hash = ref.indexOf("#");
+    const m = hash === -1 ? null : ref.slice(hash + 1).match(/xywh=(\d+),(\d+),(\d+),(\d+)/);
+    if (!m) continue;
+    if (!sprite) {
+      const file = ref.slice(0, hash);
+      try {
+        sprite = new URL(file, vttUrl).href;
+      } catch {
+        sprite = file;
+      }
+    }
+    cues.push({ start, end, x: +m[1], y: +m[2], w: +m[3], h: +m[4] });
+    i = j;
+  }
+  return cues.length ? { sprite, cues } : null;
+}
 
 function fmt(t: number): string {
   if (!Number.isFinite(t) || t < 0) return "0:00";
@@ -60,6 +106,9 @@ export function VideoPlayer({
   title,
   contentId,
   subtitleTracks = [],
+  storyboardUrl,
+  interpSrc,
+  interpFps,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -73,9 +122,14 @@ export function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [loading, setLoading] = useState(false); // buffering / stalled only -> spinner
+  const [showSpinner, setShowSpinner] = useState(false); // loading, debounced ~250ms
   const [error, setError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [menu, setMenu] = useState<Menu>(null);
+  // Transient center HUD for keyboard actions (volume / seek / mute).
+  const [flash, setFlash] = useState<{ id: number; icon: ReactNode; label: string } | null>(null);
+  const flashId = useRef(0);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [levels, setLevels] = useState<Level[]>([]);
   const [currentLevel, setCurrentLevel] = useState(-1);
@@ -93,6 +147,12 @@ export function VideoPlayer({
   const [imaxZoom, setImaxZoom] = useState(IMAX_ZOOM); // measured per-video + per-screen
   const [fps, setFps] = useState(0); // real presented frames/sec during playback
   const [droppedFrames, setDroppedFrames] = useState(0); // frames the decoder couldn't show in time
+
+  // Smooth (interpolated) rendition toggle + hover-scrub storyboard.
+  const [useInterp, setUseInterp] = useState(false);
+  const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
+  const [scrub, setScrub] = useState<{ x: number; cw: number; time: number } | null>(null);
+  const resumeRef = useRef<{ t: number; play: boolean } | null>(null);
 
   const sessionRef = useRef("");
   const eventsRef = useRef<BeaconEvent[]>([]);
@@ -114,10 +174,15 @@ export function VideoPlayer({
     });
   }, [contentId]);
 
+  // The manifest currently loaded: the smoothed rendition when the Smooth toggle
+  // is on and available, else the original. Effects key off this so a toggle
+  // reloads the player onto the other ladder.
+  const activeSrc = useInterp && interpSrc ? interpSrc : src;
+
   // ---- HLS ----
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !src) return;
+    if (!video || !activeSrc) return;
 
     sessionRef.current =
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -134,11 +199,11 @@ export function VideoPlayer({
 
     let hls: Hls | null = null;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
+      video.src = activeSrc;
     } else if (Hls.isSupported()) {
       hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 60 });
       hlsRef.current = hls;
-      hls.loadSource(src);
+      hls.loadSource(activeSrc);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setLevels(hls!.levels.map((l, i) => ({ index: i, height: l.height })));
@@ -185,7 +250,7 @@ export function VideoPlayer({
       if (hls) hls.destroy();
       hlsRef.current = null;
     };
-  }, [src, flush, pushEvent]);
+  }, [activeSrc, flush, pushEvent]);
 
   // ---- <video> events ----
   useEffect(() => {
@@ -214,6 +279,20 @@ export function VideoPlayer({
     // Only trust a finite duration (a live/unfinalized HLS reports Infinity).
     const onMeta = () => {
       if (Number.isFinite(video.duration)) setDuration(video.duration);
+      // Restore position/playback after a Smooth-toggle reload so the swap is
+      // seamless (the new manifest otherwise starts at 0, paused).
+      const r = resumeRef.current;
+      if (r) {
+        resumeRef.current = null;
+        if (r.t > 0) {
+          try {
+            video.currentTime = r.t;
+          } catch {
+            /* seek can throw before the buffer exists — ignore */
+          }
+        }
+        if (r.play) void video.play();
+      }
     };
     const onCanPlay = () => setLoading(false);
     // 'waiting'/'stalled' are the ONLY things that raise the spinner.
@@ -288,7 +367,7 @@ export function VideoPlayer({
       }
     }, 250);
     return () => clearInterval(id);
-  }, [src]);
+  }, [activeSrc]);
 
   // ---- Live playback FPS ----
   // requestVideoFrameCallback fires once per frame the compositor actually
@@ -350,6 +429,42 @@ export function VideoPlayer({
       }
     }, 1000);
     return () => clearInterval(id);
+  }, [activeSrc]);
+
+  // Debounce the buffering spinner: only raise it after ~250ms of continuous
+  // stall so quick rebuffers don't flash the overlay on and off.
+  useEffect(() => {
+    if (!loading) {
+      setShowSpinner(false);
+      return;
+    }
+    const t = setTimeout(() => setShowSpinner(true), 250);
+    return () => clearTimeout(t);
+  }, [loading]);
+
+  // Fetch + parse the hover-scrub storyboard once per title.
+  useEffect(() => {
+    if (!storyboardUrl) {
+      setStoryboard(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(storyboardUrl)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+      .then((t) => {
+        if (!cancelled) setStoryboard(parseStoryboard(t, storyboardUrl));
+      })
+      .catch(() => {
+        if (!cancelled) setStoryboard(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storyboardUrl]);
+
+  // A brand-new title starts on the original ladder (Smooth off).
+  useEffect(() => {
+    setUseInterp(false);
   }, [src]);
 
   useEffect(() => {
@@ -457,6 +572,28 @@ export function VideoPlayer({
     else void el.requestFullscreen();
   }, []);
 
+  // Flash a transient center HUD (volume %, ±10s, mute) so keyboard shortcuts
+  // are discoverable and feel responsive. Bumping id re-triggers the animation
+  // even when the same action repeats.
+  const showFlash = useCallback((icon: ReactNode, label: string) => {
+    flashId.current += 1;
+    setFlash({ id: flashId.current, icon, label });
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash(null), 650);
+  }, []);
+
+  // Swap between the original and the smoothed rendition, remembering the play
+  // position so the switch is seamless (onMeta restores it after the reload).
+  const toggleInterp = useCallback(() => {
+    const v = videoRef.current;
+    if (v) resumeRef.current = { t: v.currentTime, play: !v.paused };
+    setUseInterp((on) => {
+      const next = !on;
+      showFlash(<Sparkles className="h-6 w-6" />, next ? `Smooth ${interpFps ?? 60}` : "Smooth off");
+      return next;
+    });
+  }, [showFlash, interpFps]);
+
   const setQuality = (index: number) => {
     if (hlsRef.current) hlsRef.current.currentLevel = index;
     setCurrentLevel(index);
@@ -497,28 +634,44 @@ export function VideoPlayer({
         case "arrowleft":
         case "j":
           seek(v.currentTime - 10);
+          showFlash(<Rewind className="h-6 w-6" />, "−10s");
           break;
         case "arrowright":
         case "l":
           seek(v.currentTime + 10);
+          showFlash(<FastForward className="h-6 w-6" />, "+10s");
           break;
-        case "arrowup":
-          v.volume = Math.min(1, v.volume + 0.1);
+        case "arrowup": {
+          const vol = Math.min(1, v.volume + 0.1);
+          v.volume = vol;
+          v.muted = false;
+          showFlash(<Volume2 className="h-6 w-6" />, `${Math.round(vol * 100)}%`);
           break;
-        case "arrowdown":
-          v.volume = Math.max(0, v.volume - 0.1);
+        }
+        case "arrowdown": {
+          const vol = Math.max(0, v.volume - 0.1);
+          v.volume = vol;
+          showFlash(
+            vol === 0 ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />,
+            `${Math.round(vol * 100)}%`,
+          );
           break;
+        }
         case "f":
           toggleFullscreen();
           break;
         case "m":
           toggleMute();
+          showFlash(
+            v.muted ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />,
+            v.muted ? "Muted" : "Unmuted",
+          );
           break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seek, toggleFullscreen, toggleMute]);
+  }, [togglePlay, seek, toggleFullscreen, toggleMute, showFlash]);
 
   const nudge = useCallback(() => {
     setShowControls(true);
@@ -594,12 +747,32 @@ export function VideoPlayer({
         ))}
       </video>
 
-      {/* Spinner: ONLY while genuinely buffering / stalled. */}
-      {!error && loading && (
+      {/* Spinner: ONLY while genuinely buffering / stalled (debounced ~250ms so
+          brief rebuffers don't flash it on and off). */}
+      {!error && showSpinner && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
           <Loader2 className="h-12 w-12 animate-spin text-white/80" />
         </div>
       )}
+
+      {/* Transient keyboard HUD — volume %, ±10s, mute. */}
+      <AnimatePresence>
+        {flash && (
+          <motion.div
+            key={flash.id}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 0.15 }}
+            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+          >
+            <div className="flex items-center gap-2.5 rounded-2xl bg-black/60 px-5 py-3 text-white shadow-xl backdrop-blur-md">
+              {flash.icon}
+              <span className="text-lg font-bold tabular-nums">{flash.label}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Center Play button whenever paused (hidden as soon as it's playing). */}
       <AnimatePresence>
@@ -663,6 +836,14 @@ export function VideoPlayer({
                   {fps ? `${fps} fps` : "—"}
                 </span>
               </li>
+              {interpSrc && (
+                <li className="flex justify-between gap-4">
+                  <span className="text-white/45">Smooth</span>
+                  <span className="font-medium text-white">
+                    {useInterp ? `On · ${interpFps ?? 60} fps` : "Off"}
+                  </span>
+                </li>
+              )}
               <li className="flex justify-between gap-4">
                 <span className="text-white/45">Bitrate</span>
                 <span className="font-medium text-white">
@@ -698,13 +879,53 @@ export function VideoPlayer({
         animate={{ opacity: showControls || !playing ? 1 : 0 }}
         className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8"
       >
-        <div className="relative mb-1.5 h-1.5">
+        <div
+          className="relative mb-1.5 h-1.5"
+          onMouseMove={(e) => {
+            if (!duration) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            setScrub({ x, cw: rect.width, time: Math.max(0, Math.min(1, x / rect.width)) * duration });
+          }}
+          onMouseLeave={() => setScrub(null)}
+        >
           <div className="absolute inset-0 rounded-full bg-white/20" />
           <div className="absolute inset-y-0 left-0 rounded-full bg-white/40" style={{ width: `${duration ? (buffered / duration) * 100 : 0}%` }} />
           <div className="absolute inset-y-0 left-0 rounded-full bg-indigo-400" style={{ width: `${duration ? (current / duration) * 100 : 0}%` }} />
+          {/* Hover-scrub thumbnail: the storyboard cell under the cursor. */}
+          {scrub && storyboard && duration > 0 && (() => {
+            const cue =
+              storyboard.cues.find((c) => scrub.time >= c.start && scrub.time < c.end) ??
+              storyboard.cues[storyboard.cues.length - 1];
+            const half = cue.w / 2;
+            const left = Math.max(half, Math.min(scrub.x, scrub.cw - half));
+            return (
+              <div
+                className="pointer-events-none absolute bottom-full z-30 mb-3 flex -translate-x-1/2 flex-col items-center"
+                style={{ left }}
+              >
+                <div
+                  className="rounded-md ring-1 ring-white/25 shadow-2xl"
+                  style={{
+                    width: cue.w,
+                    height: cue.h,
+                    backgroundImage: `url("${storyboard.sprite}")`,
+                    backgroundPosition: `-${cue.x}px -${cue.y}px`,
+                    backgroundRepeat: "no-repeat",
+                  }}
+                />
+                <span className="mt-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-white">
+                  {fmt(scrub.time)}
+                </span>
+              </div>
+            );
+          })()}
           <input
             type="range" min={0} max={duration || 0} step="0.1" value={current}
             onChange={(e) => seek(Number(e.target.value))}
+            // Suppress the native arrow-step so a focused seek bar doesn't
+            // double-seek against the window-level ±10s handler.
+            onKeyDown={(e) => { if (e.key.startsWith("Arrow")) e.preventDefault(); }}
             className="absolute inset-0 w-full cursor-pointer opacity-0" aria-label="Seek"
           />
         </div>
@@ -726,6 +947,9 @@ export function VideoPlayer({
                   v.muted = Number(e.target.value) === 0;
                 }
               }}
+              // Let the window-level ±10% handler own arrow keys (avoids a
+              // native +0.05 step fighting it when the slider is focused).
+              onKeyDown={(e) => { if (e.key.startsWith("Arrow")) e.preventDefault(); }}
               className="h-1 w-20 cursor-pointer accent-white" aria-label="Volume"
             />
           </div>
@@ -805,6 +1029,27 @@ export function VideoPlayer({
                 )}
               </AnimatePresence>
             </div>
+
+            {/* Smooth (interpolated) rendition toggle — only when one exists. */}
+            {interpSrc && (
+              <button
+                type="button"
+                onClick={toggleInterp}
+                aria-pressed={useInterp}
+                title={
+                  useInterp
+                    ? `Smooth motion on — interpolated to ${interpFps ?? 60}fps`
+                    : `Smooth motion — interpolate to ${interpFps ?? 60}fps`
+                }
+                className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-bold transition-colors ${
+                  useInterp
+                    ? "bg-indigo-500/90 text-white shadow-[0_0_10px] shadow-indigo-500/40"
+                    : "text-white/80 hover:bg-white/15"
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5" /> {interpFps ?? 60}
+              </button>
+            )}
 
             <button type="button" onClick={() => setShowStats((s) => !s)} aria-label="Stats" className={`rounded p-1 hover:bg-white/15 ${showStats ? "text-indigo-300" : ""}`}>
               <Gauge className="h-4 w-4" />

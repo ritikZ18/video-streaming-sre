@@ -381,22 +381,21 @@ function EditDrawer({
   };
 
   const enhance = async () => {
-    if (!window.confirm(`Boost "${movie.title}" to ${fpsTarget} fps? It re-transcodes from the original source.`)) return;
+    if (!window.confirm(`Add a smooth ${fpsTarget} fps version of "${movie.title}"? The original stays as-is; the player gets a Smooth toggle once it finishes.`)) return;
     setBusy("interp");
     setErr(null);
     try {
       await enhanceFps(movie.id, fpsTarget);
+      // Non-destructive: the title stays ready/playable; only the interp state
+      // moves. The Smooth toggle appears in the player when the variant lands.
       onChanged({
         ...movie,
-        status: "processing",
-        progress: 0,
-        stage: "queued",
         interpRequested: true,
         interpTargetFps: fpsTarget,
         interpStatus: "queued",
         interpDetail: null,
       });
-      flash(`Boosting to ${fpsTarget} fps — re-transcoding`);
+      flash(`Smoothing to ${fpsTarget} fps — the Smooth toggle appears when it's ready`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -585,8 +584,9 @@ function EditDrawer({
               Current: <span className="text-white/80">{curFps ? `${curFps} fps` : "unknown"}</span>
               {movie.interpStatus && (
                 <span className="ml-1.5">
-                  · boost: <span className="capitalize text-white/70">{movie.interpStatus}</span>
+                  · smooth: <span className="capitalize text-white/70">{movie.interpStatus}</span>
                   {movie.interpTargetFps ? <span className="text-white/50"> → {movie.interpTargetFps} fps</span> : null}
+                  {movie.interpStatus === "done" ? <span className="text-emerald-300/70"> · toggle in player</span> : null}
                   {movie.interpDetail ? <span className="text-white/40"> ({movie.interpDetail})</span> : null}
                 </span>
               )}
@@ -615,9 +615,9 @@ function EditDrawer({
                     className="inline-flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-semibold text-indigo-100 hover:bg-indigo-400/20 disabled:opacity-50"
                   >
                     {busy === "interp" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-                    Boost FPS
+                    Add Smooth
                   </button>
-                  <span className="text-[11px] text-white/40">in place · native {curHeight ? `${curHeight}p` : "res"}</span>
+                  <span className="text-[11px] text-white/40">original kept · player toggle · native {curHeight ? `${curHeight}p` : "res"}</span>
                 </div>
                 {copyOptions.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">

@@ -38,7 +38,13 @@ export default function PlayerPage() {
     title: string | null;
     poster: string | null;
     id: string | null;
-  }>({ url: null, title: null, poster: null, id: null });
+    storyboard: string | null;
+    interpUrl: string | null;
+    interpFps: number | null;
+  }>({
+    url: null, title: null, poster: null, id: null,
+    storyboard: null, interpUrl: null, interpFps: null,
+  });
   const [subs, setSubs] = useState<SubtitleTrack[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -47,7 +53,13 @@ export default function PlayerPage() {
     const q = new URLSearchParams(window.location.search);
     const id = q.get("id");
     const urlParam = q.get("url"); // legacy / seed fallback
-    setP({ url: urlParam, title: q.get("title"), poster: q.get("poster"), id });
+    setP((prev) => ({
+      ...prev,
+      url: urlParam,
+      title: q.get("title"),
+      poster: q.get("poster"),
+      id,
+    }));
 
     // Preferred path: only an id is in the URL — fetch everything server-side so
     // the manifest/poster URLs never appear in the address bar.
@@ -64,10 +76,16 @@ export default function PlayerPage() {
                 ? m.hdrManifestUrl
                 : m.manifestUrl;
             setP((prev) => ({
+              ...prev,
               url: url ?? prev.url,
               title: m.title ?? prev.title,
               poster: m.thumbnailUrl ?? prev.poster,
               id,
+              storyboard: m.storyboardUrl ?? null,
+              // A smoothed rendition is only offered when the browser is NOT using
+              // the HEVC (HDR) master — interpolation is H.264/SDR only.
+              interpUrl: m.hdrManifestUrl && url === m.hdrManifestUrl ? null : m.interpManifestUrl ?? null,
+              interpFps: m.interpFps ?? null,
             }));
           }
         })
@@ -101,6 +119,9 @@ export default function PlayerPage() {
               poster={p.poster}
               contentId={p.id}
               subtitleTracks={subs}
+              storyboardUrl={p.storyboard}
+              interpSrc={p.interpUrl}
+              interpFps={p.interpFps}
             />
           )}
         </div>

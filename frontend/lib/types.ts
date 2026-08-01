@@ -67,4 +67,14 @@ export type Movie = {
   interpTargetFps?: number | null;
   interpStatus?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
   interpDetail?: string | null;
+  /** WebVTT storyboard (hover-scrub sprite map) served beside the manifest. */
+  storyboardUrl?: string | null;
+  /** Non-destructive smoothed rendition; when set the player shows a Smooth toggle. */
+  interpManifestUrl?: string | null;
+  /** Target fps of the smoothed rendition (labels the Smooth toggle). */
+  interpFps?: number | null;
+  /** Live interpolation progress (I/O Framer 0-100) + stage + epoch it started. */
+  interpProgress?: number | null;
+  interpStage?: string | null;
+  interpStartedAt?: number | null;
 };
