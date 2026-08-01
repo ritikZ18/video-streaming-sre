@@ -384,6 +384,24 @@ export async function retranscodeMovie(movieId: string): Promise<void> {
   if (!res.ok && res.status !== 202) throw new Error(`re-transcode failed: ${res.status}`);
 }
 
+/** Boost an existing title's frame rate via I/O Framer interpolation (re-transcodes
+    from source; admin). The worker skips + records a reason if the source is already
+    high-fps / too tall / too long / HDR. */
+export async function enhanceFps(movieId: string, targetFps: number): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ target_fps: targetFps }),
+    },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Source is gone, or interpolation is disabled on the server.");
+  if (res.status === 400) throw new Error("Invalid target fps.");
+  if (!res.ok && res.status !== 202) throw new Error(`boost fps failed: ${res.status}`);
+}
+
 export async function createMovie(
   payload: MovieCreatePayload,
 ): Promise<Movie> {

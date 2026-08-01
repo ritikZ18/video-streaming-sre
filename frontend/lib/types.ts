@@ -20,7 +20,7 @@ export type SubtitleTrack = {
   forced?: boolean;
 };
 export type MediaInfo = {
-  video?: { codec?: string | null; width?: number | null; height?: number | null } | null;
+  video?: { codec?: string | null; width?: number | null; height?: number | null; fps?: number | null } | null;
   audio?: { language: string; label: string }[];
   subtitles?: { language: string; label: string }[];
 };

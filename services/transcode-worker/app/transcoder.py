@@ -107,6 +107,18 @@ def probe_fps(input_path: Path) -> float:
         return 0.0
 
 
+def _rate_to_fps(rate: str | None) -> float:
+    """Parse an ffprobe frame-rate string ('24000/1001') → 23.976 (0.0 if bad)."""
+    if not rate or "/" not in rate:
+        return 0.0
+    try:
+        num, den = rate.split("/", 1)
+        d = float(den)
+        return round(float(num) / d, 3) if d else 0.0
+    except ValueError:
+        return 0.0
+
+
 def probe_media(input_path: Path) -> dict[str, Any]:
     """Full ffprobe (the 'VLC' metadata): video + audio tracks + subtitle tracks."""
     result = subprocess.run(
@@ -129,6 +141,7 @@ def probe_media(input_path: Path) -> dict[str, Any]:
                 "codec": s.get("codec_name"),
                 "width": s.get("width"),
                 "height": s.get("height"),
+                "fps": _rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate")),
                 # Color signalling — used to detect HDR (PQ/HLG) sources so they
                 # get an HDR-preserving HEVC tier + a tonemapped H.264 fallback.
                 "color_transfer": s.get("color_transfer"),

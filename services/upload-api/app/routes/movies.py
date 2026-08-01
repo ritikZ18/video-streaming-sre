@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import time
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile, status
 
 from app.auth import require_admin
 from app.config import get_settings
@@ -190,4 +190,49 @@ def retranscode(movie_id: str, _admin: str = Depends(require_admin)) -> dict[str
     filename = key.split("/", 1)[1] if "/" in key else key
     catalog.update_fields(movie_id, {"status": "processing", "progress": 0, "stage": "queued"})
     queue.enqueue_transcode_job(job_id=movie_id, s3_key=key, filename=filename)
+    return {"job_id": movie_id, "status": "queued"}
+
+
+@router.post("/{movie_id}/interpolate", status_code=status.HTTP_202_ACCEPTED)
+def interpolate_movie(
+    movie_id: str,
+    target_fps: int | None = Body(default=None, embed=True),
+    _admin: str = Depends(require_admin),
+) -> dict[str, str]:
+    """Boost an existing title's frame rate: re-transcode from the original source
+    with frame interpolation (I/O Framer). Requires the source still in S3. The
+    worker re-checks the guardrails and skips (recording a reason) if the source is
+    already high-fps / too tall / too long / HDR."""
+    settings = get_settings()
+    if not settings.interp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Frame interpolation is disabled on this server.",
+        )
+    _require_movie(movie_id)
+    key = s3.first_key(settings.s3_video_bucket, f"{movie_id}/")
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Original source is no longer stored — re-upload to boost fps.",
+        )
+    target = target_fps or settings.interp_default_target_fps
+    if target < 1 or target > settings.interp_max_target_fps:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"target_fps must be between 1 and {settings.interp_max_target_fps}",
+        )
+    filename = key.split("/", 1)[1] if "/" in key else key
+    catalog.update_fields(
+        movie_id,
+        {
+            "status": "processing", "progress": 0, "stage": "queued",
+            "interp_requested": True, "interp_target_fps": target,
+            "interp_status": "queued",
+        },
+    )
+    queue.enqueue_transcode_job(
+        job_id=movie_id, s3_key=key, filename=filename,
+        interp=True, interp_target_fps=target,
+    )
     return {"job_id": movie_id, "status": "queued"}
