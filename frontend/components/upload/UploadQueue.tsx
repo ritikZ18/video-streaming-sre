@@ -239,7 +239,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
             ({items.length} · {counts.ready ?? 0} ready · {(counts.uploading ?? 0) + (counts.transcoding ?? 0)} processing)
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {!started ? (
             <>
               {/* Shared defaults applied to every file in this batch */}
@@ -270,7 +270,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
                     onChange={(e) => setInterp(e.target.checked)}
                     className="accent-indigo-400"
                   />
-                  Smooth motion
+                  Smooth motion → {interpFps} fps
                 </label>
               )}
               {interpCfg?.enabled && interp && (

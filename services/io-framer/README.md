@@ -13,7 +13,35 @@ just receive a smoother master.
 - **Container:** `streamsre-io-framer` · FastAPI on `:8000` · compose name `io-framer`
 - **Engine:** [`rife-ncnn-vulkan`](https://github.com/nihui/rife-ncnn-vulkan) (C++/Vulkan) wrapped by a thin FastAPI orchestrator
 - **Interface:** see [CONTRACT.md](./CONTRACT.md) — `GET /healthz`, `POST /interpolate`, `GET /interpolate/{job_id}`
-- **Status:** Phase 0 complete (flags, catalog fields, contract). Not yet wired.
+- **Status:** all 6 phases complete — wired into the transcode pipeline and shipping (opt-in per upload).
+
+---
+
+## Scope — what it does (and what it doesn't)
+
+**Does:** raise a title's **frame rate** — motion interpolation (e.g. 24/30 fps →
+48/60 fps) so playback looks smoother. That is the *only* thing I/O Framer does.
+
+**Does not:** it does **not** upscale resolution or "increase quality" — there is no
+super-resolution, sharpening, or denoise. A 720p source stays 720p; only the frame
+rate changes. An upscaler (e.g. Real-ESRGAN — the ncnn/Vulkan sibling of RIFE) would
+be a **separate** feature and is not built.
+
+## Using it (admin studio)
+
+The frame-rate boost is **opt-in per upload**, shown only when the server has
+`INTERP_ENABLED=1` (`GET /api/v1/interp/config` → `enabled: true`):
+
+1. Go to **/admin** and drop or pick your video file(s) — the **Upload queue** appears.
+2. In the queue's controls row (next to **Genre / Rating / Tag**) tick
+   **"Smooth motion → 60 fps"**, and optionally change the target fps.
+3. Press **Start** — the toggle applies to every file in that batch.
+
+The controls row (and the toggle) only shows **after** files are queued and
+**before** you press Start — that is why it isn't visible on an empty upload page.
+Progress and outcome show in **Admin → Observability → Frame interpolation · I/O
+Framer**. A source that trips a guardrail (already high-fps, too tall/long, HDR) is
+transcoded at its native rate and marked `skipped` with the reason.
 
 ---
 
