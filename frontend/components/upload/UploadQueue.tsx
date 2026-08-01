@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Check, Loader2, Play, Trash2 } from "lucide-react";
-import { getJobStatus, listMovies, uploadVideo, MAX_UPLOAD_MB } from "../../lib/api";
+import { getJobStatus, listMovies, uploadVideo, getInterpConfig, MAX_UPLOAD_MB } from "../../lib/api";
+import type { InterpConfig } from "../../lib/api";
 import { parseMediaFilename } from "../../lib/mediaName";
 import { titleKey } from "../../lib/catalog";
 import type { Genre, Rating, Tag } from "../../lib/types";
@@ -71,6 +72,10 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
   const [genre, setGenre] = useState<Genre>("Action");
   const [rating, setRating] = useState<Rating>("PG-13");
   const [tag, setTag] = useState<Tag>(null);
+  // I/O Framer (frame interpolation) — shown only when the server enables it.
+  const [interpCfg, setInterpCfg] = useState<InterpConfig | null>(null);
+  const [interp, setInterp] = useState(false);
+  const [interpFps, setInterpFps] = useState(60);
 
   const itemsRef = useRef<QItem[]>([]);
   itemsRef.current = items;
@@ -87,6 +92,16 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
     listMovies()
       .then((ms) => {
         existingRef.current = new Set(ms.map((m) => titleKey(m.title)));
+      })
+      .catch(() => {});
+  }, []);
+
+  // Frame-interpolation feature flag + caps (best-effort; absent = disabled).
+  useEffect(() => {
+    getInterpConfig()
+      .then((cfg: InterpConfig) => {
+        setInterpCfg(cfg);
+        setInterpFps(cfg.default_target_fps);
       })
       .catch(() => {});
   }, []);
@@ -128,6 +143,9 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
               year: Number.parseInt(it.year, 10) || 2025,
               rating,
               tag: tag ?? undefined,
+              ...(interp && interpCfg?.enabled
+                ? { interp: true, interp_target_fps: interpFps }
+                : {}),
             },
             (pct) => update(it.id, { uploadPct: pct }),
           );
@@ -139,7 +157,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
     } finally {
       runningRef.current = false;
     }
-  }, [genre, rating, tag, update]);
+  }, [genre, rating, tag, interp, interpCfg, interpFps, update]);
 
   // Merge newly dropped files into the queue (dedupe by name+size+mtime).
   useEffect(() => {
@@ -221,7 +239,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
             ({items.length} · {counts.ready ?? 0} ready · {(counts.uploading ?? 0) + (counts.transcoding ?? 0)} processing)
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {!started ? (
             <>
               {/* Shared defaults applied to every file in this batch */}
@@ -241,6 +259,32 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
                   <option key={t} value={t} className="bg-black">{t}</option>
                 ))}
               </select>
+              {interpCfg?.enabled && (
+                <label
+                  title={`Smooth motion with RIFE frame interpolation · ≤${interpCfg.max_height}p · ≤${Math.round(interpCfg.max_duration_seconds / 60)} min · opt-in`}
+                  className="flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-2.5 py-1.5 text-xs text-indigo-100"
+                >
+                  <input
+                    type="checkbox"
+                    checked={interp}
+                    onChange={(e) => setInterp(e.target.checked)}
+                    className="accent-indigo-400"
+                  />
+                  Smooth motion → {interpFps} fps
+                </label>
+              )}
+              {interpCfg?.enabled && interp && (
+                <select
+                  aria-label="Target fps"
+                  value={interpFps}
+                  onChange={(e) => setInterpFps(Number(e.target.value))}
+                  className={select}
+                >
+                  {[48, 60].filter((f) => f <= interpCfg.max_target_fps).map((f) => (
+                    <option key={f} value={f} className="bg-black">{f} fps</option>
+                  ))}
+                </select>
+              )}
               <button
                 type="button"
                 onClick={() => setStarted(true)}

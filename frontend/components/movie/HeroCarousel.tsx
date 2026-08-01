@@ -128,7 +128,12 @@ export function HeroCarousel({ movies, onMoreInfo, onPlay }: HeroCarouselProps) 
               className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-2.5 text-sm font-bold text-black shadow-glow-soft transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Play className="h-4 w-4 fill-black text-black" />
-              {current.status === "processing" ? "Processing…" : "Play"}
+              {/* Playable as soon as a manifest exists (a background re-encode
+                  keeps the old segments streamable). Only a real upload still
+                  encoding shows "Processing"; display-only catalog items don't. */}
+              {!current.manifestUrl && current.status === "processing" && !current.displayOnly
+                ? "Processing…"
+                : "Play"}
             </button>
             <button
               type="button"

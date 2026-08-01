@@ -7,7 +7,7 @@ from app.middleware.cors import add_cors_middleware
 from app.middleware.logging import LoggingMiddleware, configure_structlog
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.security import MaxBodySizeMiddleware, RateLimitMiddleware
-from app.routes import admin, health, movies, upload
+from app.routes import admin, health, interp, movies, upload
 from app.routes import status as status_routes
 
 
@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
     # Routers
     app.include_router(health.router)
     app.include_router(upload.router)
+    app.include_router(interp.router)
     app.include_router(status_routes.router)
     app.include_router(movies.router)
     app.include_router(admin.router)

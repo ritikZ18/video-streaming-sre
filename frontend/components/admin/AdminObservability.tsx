@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2 } from "lucide-react";
+import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 
@@ -51,6 +51,15 @@ function StatCard({
   );
 }
 
+// I/O Framer interpolation status → pill styling.
+const interpPill: Record<string, string> = {
+  queued: "text-white/60 border-white/15 bg-white/5",
+  processing: "text-sky-300 border-sky-400/30 bg-sky-400/10",
+  done: "text-emerald-300 border-emerald-400/30 bg-emerald-400/10",
+  skipped: "text-amber-300 border-amber-400/30 bg-amber-400/10",
+  failed: "text-rose-300 border-rose-400/30 bg-rose-400/10",
+};
+
 const eventColor: Record<string, string> = {
   startup: "text-sky-300 border-sky-400/30 bg-sky-400/10",
   rebuffer: "text-amber-300 border-amber-400/30 bg-amber-400/10",
@@ -61,7 +70,7 @@ const eventColor: Record<string, string> = {
 
 export function AdminObservability() {
   const [stats, setStats] = useState<QoeStats | null>(null);
-  const [titles, setTitles] = useState<Map<string, string>>(new Map());
+  const [movies, setMovies] = useState<Movie[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState(false);
 
@@ -81,12 +90,31 @@ export function AdminObservability() {
     return () => clearInterval(t);
   }, [load]);
 
-  // Map content_id → title for readable per-title rows / event feed.
+  // Poll the catalog for the content_id → title map AND live encode status.
   useEffect(() => {
-    listMovies()
-      .then((ms: Movie[]) => setTitles(new Map(ms.map((m) => [m.id, m.title]))))
-      .catch(() => {});
+    const loadMovies = () => {
+      listMovies().then(setMovies).catch(() => {});
+    };
+    loadMovies();
+    const t = setInterval(loadMovies, 4000);
+    return () => clearInterval(t);
   }, []);
+
+  const titles = useMemo(
+    () => new Map(movies.map((m) => [m.id, m.title] as const)),
+    [movies],
+  );
+  // Titles the worker is actively encoding — including re-encodes / audio
+  // re-segmenting of titles that already have a (still-playable) manifest.
+  const encoding = useMemo(
+    () => movies.filter((m) => m.status === "processing"),
+    [movies],
+  );
+  // Titles with any frame-interpolation activity (I/O Framer): request + state.
+  const interpJobs = useMemo(
+    () => movies.filter((m) => m.interpStatus),
+    [movies],
+  );
 
   const titleOf = useCallback(
     (id: string | null) => (id && titles.get(id)) || (id ? `${id.slice(0, 8)}…` : "—"),
@@ -167,6 +195,86 @@ export function AdminObservability() {
           tone={s.errors.total === 0 ? "good" : "bad"}
         />
       </div>
+
+      {/* Transcode jobs — live encode progress from the catalog (upload-api) */}
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+        <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+            <Film className="h-3.5 w-3.5" /> Transcode jobs
+          </span>
+          <span className="tabular-nums text-[11px] text-white/40">{encoding.length} active</span>
+        </div>
+        {encoding.length === 0 ? (
+          <p className="px-4 py-5 text-center text-sm text-white/40">
+            No active encodes — everything&apos;s ready.
+          </p>
+        ) : (
+          <ul className="divide-y divide-white/[0.06]">
+            {encoding.map((m) => {
+              const pct = Math.max(0, Math.min(100, m.progress ?? 0));
+              return (
+                <li key={m.id} className="px-4 py-3">
+                  <div className="mb-1.5 flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-white">{m.title}</span>
+                    <span className="flex items-center gap-2 whitespace-nowrap text-[11px] text-white/50">
+                      <span className="capitalize">{m.stage ?? "queued"}</span>
+                      <span className="tabular-nums">{pct}%</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-400 transition-[width] duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Frame interpolation — I/O Framer status + reason per title */}
+      {interpJobs.length > 0 && (
+        <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+          <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+            <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+              <Sparkles className="h-3.5 w-3.5" /> Frame interpolation · I/O Framer
+            </span>
+            <span className="tabular-nums text-[11px] text-white/40">
+              {interpJobs.filter((m) => m.interpStatus === "processing").length} active
+            </span>
+          </div>
+          <ul className="divide-y divide-white/[0.06]">
+            {interpJobs.map((m) => (
+              <li key={m.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                <span className="min-w-0 flex-1 truncate text-white">{m.title}</span>
+                {m.interpTargetFps ? (
+                  <span className="whitespace-nowrap text-[11px] tabular-nums text-white/45">
+                    → {m.interpTargetFps} fps
+                  </span>
+                ) : null}
+                {m.interpDetail ? (
+                  <span
+                    className="hidden max-w-[260px] truncate text-[11px] text-white/40 sm:inline"
+                    title={m.interpDetail}
+                  >
+                    {m.interpDetail}
+                  </span>
+                ) : null}
+                <span
+                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold capitalize ${
+                    interpPill[m.interpStatus ?? "queued"] ?? interpPill.queued
+                  }`}
+                >
+                  {m.interpStatus === "processing" && <Loader2 className="h-3 w-3 animate-spin" />}
+                  {m.interpStatus}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {empty && (
         <p className="mt-4 rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-white/50">

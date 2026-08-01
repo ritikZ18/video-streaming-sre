@@ -13,6 +13,8 @@ import {
   Clock,
   Eye,
   Music,
+  Play,
+  Zap,
 } from "lucide-react";
 import type { Movie } from "../../lib/types";
 import {
@@ -21,7 +23,10 @@ import {
   uploadArtwork,
   attachAudio,
   retranscodeMovie,
+  enhanceFps,
+  getInterpConfig,
   deleteMovie,
+  type InterpConfig,
   type MoviePatch,
 } from "../../lib/api";
 
@@ -187,13 +192,26 @@ export function AdminCatalog() {
                     <td className="px-4 py-2.5"><VisChip v={m.visibility} /></td>
                     <td className="px-4 py-2.5 font-mono text-[12px] text-white/60">{q}</td>
                     <td className="px-4 py-2.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(m)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-white/80 hover:bg-white/10"
-                      >
-                        <Pencil className="h-3 w-3" /> Edit
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        {m.manifestUrl && (
+                          <a
+                            href={`/player?id=${encodeURIComponent(m.id)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Preview in a new tab"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-500/15 px-2.5 py-1 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-500/25"
+                          >
+                            <Play className="h-3 w-3 fill-current" /> Play
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setEditing(m)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-white/80 hover:bg-white/10"
+                        >
+                          <Pencil className="h-3 w-3" /> Edit
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -254,13 +272,26 @@ function EditDrawer({
     initialPosterMode === "url" ? movie.posterUrl ?? "" : "",
   );
   const [busy, setBusy] = useState<
-    null | "save" | "retranscode" | "poster" | "backdrop" | "audio" | "delete"
+    null | "save" | "retranscode" | "poster" | "backdrop" | "audio" | "interp" | "delete"
   >(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const posterInput = useRef<HTMLInputElement>(null);
   const backdropInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
+
+  // Frame interpolation (I/O Framer): shown only when the server enables it.
+  const [interpCfg, setInterpCfg] = useState<InterpConfig | null>(null);
+  const [fpsTarget, setFpsTarget] = useState(60);
+  const curFps = Math.round(movie.mediaInfo?.video?.fps ?? 0) || null;
+  useEffect(() => {
+    getInterpConfig()
+      .then((c) => {
+        setInterpCfg(c);
+        setFpsTarget(c.default_target_fps);
+      })
+      .catch(() => {});
+  }, []);
 
   // A title "has audio" if the transcode found tracks (either embedded or a
   // previously-attached external one shows up as a track once it re-processes).
@@ -324,6 +355,30 @@ function EditDrawer({
         hasExternalAudio: true,
       });
       flash("Audio attached — re-segmenting");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const enhance = async () => {
+    if (!window.confirm(`Boost "${movie.title}" to ${fpsTarget} fps? It re-transcodes from the original source.`)) return;
+    setBusy("interp");
+    setErr(null);
+    try {
+      await enhanceFps(movie.id, fpsTarget);
+      onChanged({
+        ...movie,
+        status: "processing",
+        progress: 0,
+        stage: "queued",
+        interpRequested: true,
+        interpTargetFps: fpsTarget,
+        interpStatus: "queued",
+        interpDetail: null,
+      });
+      flash(`Boosting to ${fpsTarget} fps — re-transcoding`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -487,6 +542,53 @@ function EditDrawer({
             </div>
           )}
         </div>
+
+        {/* Frame rate — boost fps on an existing title via I/O Framer */}
+        {interpCfg?.enabled && (
+          <div className="mt-5 border-t border-white/10 pt-5">
+            <span className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-wider text-white/40">
+              Frame rate · motion
+            </span>
+            <p className="text-xs text-white/50">
+              Current: <span className="text-white/80">{curFps ? `${curFps} fps` : "unknown"}</span>
+              {movie.interpStatus && (
+                <span className="ml-1.5">
+                  · boost: <span className="capitalize text-white/70">{movie.interpStatus}</span>
+                  {movie.interpTargetFps ? <span className="text-white/50"> → {movie.interpTargetFps} fps</span> : null}
+                  {movie.interpDetail ? <span className="text-white/40"> ({movie.interpDetail})</span> : null}
+                </span>
+              )}
+            </p>
+            {curFps && curFps >= interpCfg.max_source_fps ? (
+              <p className="mt-2 flex items-center gap-2 text-xs text-emerald-300/80">
+                <Zap className="h-3.5 w-3.5" /> Already high frame-rate — no boost needed.
+              </p>
+            ) : (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="Target fps"
+                  value={fpsTarget}
+                  onChange={(e) => setFpsTarget(Number(e.target.value))}
+                  className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1.5 text-xs text-white outline-none focus:border-white/40"
+                >
+                  {[48, 60].filter((f) => f <= interpCfg.max_target_fps).map((f) => (
+                    <option key={f} value={f} className="bg-black">{f} fps</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={enhance}
+                  className="inline-flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-semibold text-indigo-100 hover:bg-indigo-400/20 disabled:opacity-50"
+                >
+                  {busy === "interp" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                  Boost FPS
+                </button>
+                <span className="text-[11px] text-white/40">re-transcodes from source</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {(msg || err) && (
           <p className={`mt-4 text-xs ${err ? "text-rose-400" : "text-emerald-400"}`}>{err ?? msg}</p>

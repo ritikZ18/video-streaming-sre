@@ -20,7 +20,7 @@ export type SubtitleTrack = {
   forced?: boolean;
 };
 export type MediaInfo = {
-  video?: { codec?: string | null; width?: number | null; height?: number | null } | null;
+  video?: { codec?: string | null; width?: number | null; height?: number | null; fps?: number | null } | null;
   audio?: { language: string; label: string }[];
   subtitles?: { language: string; label: string }[];
 };
@@ -62,4 +62,9 @@ export type Movie = {
   mediaInfo?: MediaInfo | null;
   /** True once an admin attached an external audio track to a silent title. */
   hasExternalAudio?: boolean;
+  /** Frame interpolation (I/O Framer) lifecycle + request. */
+  interpRequested?: boolean;
+  interpTargetFps?: number | null;
+  interpStatus?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
+  interpDetail?: string | null;
 };

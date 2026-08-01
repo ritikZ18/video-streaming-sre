@@ -106,6 +106,10 @@ type ApiMovie = {
   subtitle_tracks?: SubtitleTrack[];
   media_info?: MediaInfo | null;
   has_external_audio?: boolean | null;
+  interp_requested?: boolean | null;
+  interp_target_fps?: number | null;
+  interp_status?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
+  interp_detail?: string | null;
   created_at?: string;
 };
 
@@ -127,7 +131,29 @@ export type MovieCreatePayload = {
   description?: string;
   tag?: string;
   manifest_url?: string;
+  // I/O Framer (frame interpolation) — opt-in per upload.
+  interp?: boolean;
+  interp_target_fps?: number;
 };
+
+// I/O Framer feature flag + guardrails (public read).
+export type InterpConfig = {
+  enabled: boolean;
+  default_target_fps: number;
+  max_target_fps: number;
+  max_height: number;
+  max_source_fps: number;
+  max_duration_seconds: number;
+};
+
+/** Read the interpolation feature flag + caps so the upload UI can show the
+ *  toggle only when the server has it enabled. Best-effort (never throws in the
+ *  caller path — treat a rejection as "disabled"). */
+export async function getInterpConfig(): Promise<InterpConfig> {
+  const res = await fetch(`${API_URL}/api/v1/interp/config`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`interp config failed: ${res.status}`);
+  return (await res.json()) as InterpConfig;
+}
 
 // ---- Gradient synthesis (uploaded videos have no artwork) ----
 
@@ -178,6 +204,10 @@ export function mapMovie(m: ApiMovie): Movie {
     subtitleTracks: m.subtitle_tracks ?? [],
     mediaInfo: m.media_info ?? null,
     hasExternalAudio: m.has_external_audio ?? false,
+    interpRequested: m.interp_requested ?? false,
+    interpTargetFps: m.interp_target_fps ?? null,
+    interpStatus: m.interp_status ?? null,
+    interpDetail: m.interp_detail ?? null,
   };
 }
 
@@ -352,6 +382,24 @@ export async function retranscodeMovie(movieId: string): Promise<void> {
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (res.status === 409) throw new Error("Original source is gone — re-upload to re-transcode.");
   if (!res.ok && res.status !== 202) throw new Error(`re-transcode failed: ${res.status}`);
+}
+
+/** Boost an existing title's frame rate via I/O Framer interpolation (re-transcodes
+    from source; admin). The worker skips + records a reason if the source is already
+    high-fps / too tall / too long / HDR. */
+export async function enhanceFps(movieId: string, targetFps: number): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ target_fps: targetFps }),
+    },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Source is gone, or interpolation is disabled on the server.");
+  if (res.status === 400) throw new Error("Invalid target fps.");
+  if (!res.ok && res.status !== 202) throw new Error(`boost fps failed: ${res.status}`);
 }
 
 export async function createMovie(

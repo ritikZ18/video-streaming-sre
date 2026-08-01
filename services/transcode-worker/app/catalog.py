@@ -173,6 +173,28 @@ def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
         logger.warning("catalog_progress_update_skipped", movie_id=movie_id, error=str(exc))
 
 
+def update_interp(movie_id: str, status: str, detail: str | None = None) -> None:
+    """Best-effort update of the frame-interpolation lifecycle field
+    (queued|processing|done|skipped|failed) + an optional human reason. Never
+    raises; a missing row (canceled/deleted) is silently ignored."""
+    try:
+        expr = "SET interp_status = :s"
+        values: dict[str, object] = {":s": status}
+        if detail is not None:
+            expr += ", interp_detail = :d"
+            values[":d"] = detail
+        else:
+            expr += " REMOVE interp_detail"
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression=expr,
+            ExpressionAttributeValues=values,
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - interp state is non-critical
+        logger.warning("catalog_interp_update_skipped", movie_id=movie_id, error=str(exc))
+
+
 def mark_ready(
     movie_id: str,
     manifest_url: str,

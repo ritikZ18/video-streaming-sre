@@ -84,6 +84,41 @@ def extract_thumbnail(input_path: Path, output_path: Path, at_seconds: float = 3
     return result.returncode == 0 and output_path.exists()
 
 
+def probe_fps(input_path: Path) -> float:
+    """Average frame rate of the first video stream (0.0 if unknown). Used by the
+    interpolation guardrails (skip a source that is already high-fps)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=avg_frame_rate", "-of", "default=nk=1:nw=1",
+         str(input_path)],
+        capture_output=True, text=True, check=False,
+    )
+    raw = (result.stdout or "").strip()
+    if "/" in raw:
+        num, den = raw.split("/", 1)
+        try:
+            d = float(den)
+            return float(num) / d if d else 0.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _rate_to_fps(rate: str | None) -> float:
+    """Parse an ffprobe frame-rate string ('24000/1001') → 23.976 (0.0 if bad)."""
+    if not rate or "/" not in rate:
+        return 0.0
+    try:
+        num, den = rate.split("/", 1)
+        d = float(den)
+        return round(float(num) / d, 3) if d else 0.0
+    except ValueError:
+        return 0.0
+
+
 def probe_media(input_path: Path) -> dict[str, Any]:
     """Full ffprobe (the 'VLC' metadata): video + audio tracks + subtitle tracks."""
     result = subprocess.run(
@@ -106,6 +141,7 @@ def probe_media(input_path: Path) -> dict[str, Any]:
                 "codec": s.get("codec_name"),
                 "width": s.get("width"),
                 "height": s.get("height"),
+                "fps": _rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate")),
                 # Color signalling — used to detect HDR (PQ/HLG) sources so they
                 # get an HDR-preserving HEVC tier + a tonemapped H.264 fallback.
                 "color_transfer": s.get("color_transfer"),
@@ -172,6 +208,20 @@ def encode_external_audio(
     if result.returncode != 0:
         raise RuntimeError(f"external audio encode failed: {result.stderr}")
     return output_path
+
+
+def reassemble_rendition(playlist_path: Path, output_path: Path) -> bool:
+    """Stream-copy an HLS media playlist's fMP4 segments back into a single MP4
+    (``-c copy``, no re-encode). Used to rebuild a rendition for the audio-remux
+    fast path on titles encoded before renditions were persisted — so remux never
+    has to re-transcode the video."""
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-allowed_extensions", "ALL",
+         "-i", str(playlist_path), "-c", "copy", "-movflags", "+faststart",
+         str(output_path)],
+        capture_output=True, text=True, check=False,
+    )
+    return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
 
 
 def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: int) -> bool:
