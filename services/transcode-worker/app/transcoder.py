@@ -141,7 +141,9 @@ def probe_media(input_path: Path) -> dict[str, Any]:
                 "codec": s.get("codec_name"),
                 "width": s.get("width"),
                 "height": s.get("height"),
-                "fps": _rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate")),
+                # Stored as an int — DynamoDB (boto3 resource) rejects Python floats,
+                # and a whole-number fps is all the UI shows. 23.976 -> 24.
+                "fps": round(_rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate"))),
                 # Color signalling — used to detect HDR (PQ/HLG) sources so they
                 # get an HDR-preserving HEVC tier + a tonemapped H.264 fallback.
                 "color_transfer": s.get("color_transfer"),

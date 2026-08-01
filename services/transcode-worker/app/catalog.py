@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import json
+from decimal import Decimal
+from typing import Any
+
 import boto3
 import structlog
 from app.config import get_settings
 from botocore.exceptions import ClientError
 
 logger = structlog.get_logger()
+
+
+def _ddb_safe(value: Any) -> Any:
+    """Make a value safe for DynamoDB (boto3 resource): recursively convert every
+    float to Decimal. A single stray float (e.g. an fps like 23.976) otherwise
+    fails the whole write with 'Float types are not supported'."""
+    return json.loads(json.dumps(value), parse_float=Decimal)
 
 
 def _resource():
@@ -79,7 +90,7 @@ def _update(
         values[":su"] = subtitle_tracks
     if media_info is not None:
         expr += ", media_info = :mi"
-        values[":mi"] = media_info
+        values[":mi"] = _ddb_safe(media_info)
     _table().update_item(
         Key={"id": movie_id},
         UpdateExpression=expr,
