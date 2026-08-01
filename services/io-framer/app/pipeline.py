@@ -63,9 +63,14 @@ def run_pipeline(
     out_bucket: str,
     out_key: str,
     gpu: bool,
+    max_height: int | None = None,
 ) -> None:
     """Blocking decode → RIFE → encode → upload. Runs in a worker thread behind
-    the GPU semaphore; all state flows back through the registry."""
+    the GPU semaphore; all state flows back through the registry.
+
+    ``max_height`` (optional) interpolates at a reduced resolution: frames are
+    downscaled to that height before RIFE, so a 4K source can be smoothed at, say,
+    1080p for a fraction of the disk and time."""
     s = get_settings()
     started = time.monotonic()
     work = Path(tempfile.mkdtemp(prefix=f"iof-{job_id}-", dir=_ensure_workdir(s.work_dir)))
@@ -81,14 +86,23 @@ def run_pipeline(
         _u(job_id, source_fps=src_fps)
         _guard(info, target_fps, s)
 
-        # Bail before extracting anything if the scratch volume is too small.
+        # Optional downscale: interpolate at a smaller resolution to bound disk/time.
+        src_h, src_w = int(info["height"] or 0), int(info["width"] or 0)
+        scale_h = max_height if (max_height and src_h and max_height < src_h) else None
+        eff_h = scale_h or src_h
+        eff_w = round(src_w * eff_h / src_h) if (scale_h and src_h) else src_w
+
+        # Bail before extracting anything if the scratch volume is too small — sized
+        # on the (possibly downscaled) frames actually written.
         est_in = round(duration * src_fps) if duration and src_fps else 0
         est_out = round(duration * target_fps) if duration else 0
-        _disk_preflight(work, info["width"], info["height"], est_in, est_out)
+        _disk_preflight(work, eff_w, eff_h, est_in, est_out)
 
         _u(job_id, stage="extracting", progress=20)
         frames_in = work / "in"
-        n_in = ffmpeg.extract_frames(str(input_path), str(frames_in), s.interp_timeout_seconds)
+        n_in = ffmpeg.extract_frames(
+            str(input_path), str(frames_in), s.interp_timeout_seconds, scale_height=scale_h
+        )
         if n_in < 2:
             raise RuntimeError("need at least 2 frames to interpolate")
 

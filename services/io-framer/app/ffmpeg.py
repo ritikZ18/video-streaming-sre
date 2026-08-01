@@ -47,18 +47,22 @@ def probe(path: str) -> dict:
     }
 
 
-def extract_frames(input_path: str, frames_dir: str, timeout: int) -> int:
-    """Decode every source frame to a lossless PNG. Returns the frame count."""
+def extract_frames(
+    input_path: str, frames_dir: str, timeout: int, scale_height: int | None = None
+) -> int:
+    """Decode every source frame to a lossless PNG. Returns the frame count.
+
+    ``scale_height`` (when set) downscales each frame to that height first — so a
+    4K source can be interpolated at, say, 1080p for far less disk/time. Width is
+    auto (``-2``, kept even); this only ever shrinks (the caller passes a height
+    below the source)."""
     Path(frames_dir).mkdir(parents=True, exist_ok=True)
     # -fps_mode passthrough keeps every source frame (1:1); no frame dropping.
-    p = _run(
-        [
-            "ffmpeg", "-y", "-i", input_path,
-            "-fps_mode", "passthrough",
-            f"{frames_dir}/frame_%08d.png",
-        ],
-        timeout=timeout,
-    )
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-fps_mode", "passthrough"]
+    if scale_height:
+        cmd += ["-vf", f"scale=-2:{scale_height}:flags=lanczos"]
+    cmd += [f"{frames_dir}/frame_%08d.png"]
+    p = _run(cmd, timeout=timeout)
     if p.returncode != 0:
         raise RuntimeError(f"frame extract failed: {p.stderr[-300:]}")
     return len(list(Path(frames_dir).glob("frame_*.png")))

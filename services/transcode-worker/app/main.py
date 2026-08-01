@@ -467,19 +467,26 @@ def _interp_skip_reason(
     return None
 
 
-def _call_io_framer(job_id: str, s3_key: str, target_fps: int, out_key: str, emit) -> None:
+def _call_io_framer(
+    job_id: str, s3_key: str, target_fps: int, out_key: str, emit,
+    interp_height: int | None = None,
+) -> None:
     """POST to the I/O Framer sidecar and poll to completion. Raises on failure,
-    timeout, or an unreachable sidecar so the caller can fall back to native fps."""
+    timeout, or an unreachable sidecar so the caller can fall back to native fps.
+
+    ``interp_height`` (optional) asks the sidecar to interpolate at that reduced
+    height — used for the "downscaled copy" (e.g. a 4K source smoothed at 1080p)."""
     settings = get_settings()
     base = settings.interp_service_url.rstrip("/")
-    payload = json.dumps(
-        {
-            "movie_id": job_id,
-            "target_fps": target_fps,
-            "source": {"s3_bucket": settings.s3_video_bucket, "s3_key": s3_key},
-            "output": {"s3_bucket": settings.s3_video_bucket, "s3_key": out_key},
-        }
-    ).encode()
+    body: dict[str, Any] = {
+        "movie_id": job_id,
+        "target_fps": target_fps,
+        "source": {"s3_bucket": settings.s3_video_bucket, "s3_key": s3_key},
+        "output": {"s3_bucket": settings.s3_video_bucket, "s3_key": out_key},
+    }
+    if interp_height:
+        body["options"] = {"max_height": interp_height}
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         f"{base}/interpolate", data=payload,
         headers={"content-type": "application/json"}, method="POST",
@@ -540,9 +547,10 @@ def _maybe_interpolate(
     catalog.update_interp(job_id, "processing")
     logger.info("interp_start", job_id=job_id, target_fps=target, source_fps=round(src_fps, 2))
     mezz_key = f"{job_id}/interpolated.mp4"
+    interp_height = body.get("interp_height")
     interp_started = time.monotonic()
     try:
-        _call_io_framer(job_id, body["s3_key"], target, mezz_key, emit)
+        _call_io_framer(job_id, body["s3_key"], target, mezz_key, emit, interp_height=interp_height)
         mezz_path = tmpdir / "mezzanine.mp4"
         _download_input(settings.s3_video_bucket, mezz_key, mezz_path)
         video_media = probe_media(mezz_path)

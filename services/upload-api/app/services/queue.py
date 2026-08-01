@@ -51,6 +51,7 @@ def enqueue_transcode_job(
     mode: str = "transcode",
     interp: bool = False,
     interp_target_fps: int | None = None,
+    interp_height: int | None = None,
 ) -> None:
     """Add a transcode job to the durable, DynamoDB-backed queue.
 
@@ -78,6 +79,8 @@ def enqueue_transcode_job(
     if interp:
         body["interp"] = True
         body["interp_target_fps"] = interp_target_fps
+        if interp_height:
+            body["interp_height"] = interp_height
     now = int(time.time())
     item = {
         "job_id": job_id,

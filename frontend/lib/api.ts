@@ -402,6 +402,27 @@ export async function enhanceFps(movieId: string, targetFps: number): Promise<vo
   if (!res.ok && res.status !== 202) throw new Error(`boost fps failed: ${res.status}`);
 }
 
+/** Create a NEW interpolated (optionally downscaled) copy of a title — e.g. a 4K
+    source smoothed into a 1080p·60fps copy. Leaves the original untouched (admin). */
+export async function enhanceFpsCopy(
+  movieId: string,
+  targetFps: number,
+  height?: number,
+): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate-copy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ target_fps: targetFps, height: height ?? null }),
+    },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Source is gone, or interpolation is disabled on the server.");
+  if (res.status === 400) throw new Error("Invalid fps/height.");
+  if (!res.ok && res.status !== 202) throw new Error(`create copy failed: ${res.status}`);
+}
+
 export async function createMovie(
   payload: MovieCreatePayload,
 ): Promise<Movie> {

@@ -236,3 +236,72 @@ def interpolate_movie(
         interp=True, interp_target_fps=target,
     )
     return {"job_id": movie_id, "status": "queued"}
+
+
+@router.post("/{movie_id}/interpolate-copy", status_code=status.HTTP_202_ACCEPTED)
+def interpolate_copy(
+    movie_id: str,
+    target_fps: int | None = Body(default=None, embed=True),
+    height: int | None = Body(default=None, embed=True),
+    _admin: str = Depends(require_admin),
+) -> dict[str, str]:
+    """Create a NEW title that is a frame-interpolated (and optionally downscaled)
+    copy of an existing one — e.g. a 4K source smoothed into a 1080p·60fps copy for
+    a fraction of the disk/time. The original is untouched; the copy re-uses the
+    same source object in S3 and gets its own ladder."""
+    settings = get_settings()
+    if not settings.interp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Frame interpolation is disabled on this server.",
+        )
+    src_movie = catalog.get(movie_id)
+    if src_movie is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found")
+    key = s3.first_key(settings.s3_video_bucket, f"{movie_id}/")
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Original source is no longer stored — re-upload to make a copy.",
+        )
+    target = target_fps or settings.interp_default_target_fps
+    if target < 1 or target > settings.interp_max_target_fps:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"target_fps must be between 1 and {settings.interp_max_target_fps}",
+        )
+    if height is not None and (height < 144 or height > settings.interp_max_height):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"height must be between 144 and {settings.interp_max_height}",
+        )
+
+    new_id = str(uuid4())
+    label = f"{height}p{target}" if height else f"{target}fps"
+    new_movie = Movie(
+        id=new_id,
+        created_at=datetime.now(tz=timezone.utc),
+        status="processing",
+        title=f"{src_movie.title} · {label}",
+        description=src_movie.description,
+        genre=src_movie.genre,
+        year=src_movie.year,
+        rating=src_movie.rating,
+        duration=src_movie.duration,
+        tag=src_movie.tag,
+        poster_url=src_movie.poster_url,
+        backdrop_url=src_movie.backdrop_url,
+        visibility=src_movie.visibility,
+        interp_requested=True,
+        interp_target_fps=target,
+        interp_status="queued",
+        progress=0,
+        stage="queued",
+    )
+    catalog.save(new_movie)
+    filename = key.split("/", 1)[1] if "/" in key else key
+    queue.enqueue_transcode_job(
+        job_id=new_id, s3_key=key, filename=filename,
+        interp=True, interp_target_fps=target, interp_height=height,
+    )
+    return {"job_id": new_id, "status": "queued"}

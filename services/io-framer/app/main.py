@@ -56,10 +56,11 @@ def healthz() -> Health:
 async def _run(
     job_id: str, target_fps: int,
     sb: str, sk: str, ob: str, ok: str, gpu: bool,
+    max_height: int | None = None,
 ) -> None:
     async with _SEM:
         await asyncio.to_thread(
-            run_pipeline, job_id, "", target_fps, sb, sk, ob, ok, gpu
+            run_pipeline, job_id, "", target_fps, sb, sk, ob, ok, gpu, max_height
         )
 
 
@@ -87,11 +88,13 @@ async def interpolate(req: InterpolateRequest) -> InterpolateAccepted:
     REGISTRY.create(
         Job(job_id=job_id, movie_id=req.movie_id, target_fps=req.target_fps, key=key, gpu=gpu)
     )
+    max_height = req.options.max_height if req.options else None
     task = asyncio.create_task(
         _run(
             job_id, req.target_fps,
             req.source.s3_bucket, req.source.s3_key,
             req.output.s3_bucket, req.output.s3_key, gpu,
+            max_height,
         )
     )
     _TASKS.add(task)
