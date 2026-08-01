@@ -560,17 +560,22 @@ export function VideoPlayer({
     >
       {/* Ambient backdrop — two blurred, scaled covers of the poster fill the
           letterbox bars with the poster's own colours (soft "ambilight" glow).
-          Skipped in IMAX fill (no bars there) and when there's no poster. */}
+          Only while the poster is showing: it fades out once the video plays so
+          the frame stands on its own. Skipped in IMAX fill and with no poster. */}
       {poster && !imax && (
-        <>
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-0 transition-opacity duration-700 ${
+            playing ? "opacity-0" : "opacity-100"
+          }`}
+        >
           <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 scale-[1.35] bg-cover bg-center opacity-70 blur-[64px] saturate-150"
+            className="absolute inset-0 scale-[1.35] bg-cover bg-center opacity-70 blur-[64px] saturate-150"
             style={{ backgroundImage: `url("${poster}")` }}
           />
           {/* gentle inward vignette so the crisp poster/video still pops */}
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_38%,rgba(0,0,0,0.55))]" />
-        </>
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_38%,rgba(0,0,0,0.55))]" />
+        </div>
       )}
 
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
