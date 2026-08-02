@@ -1,4 +1,4 @@
-import type { AudioTrack, MediaInfo, Movie, SubtitleTrack, Tag } from "./types";
+import type { AudioTrack, ExtractTask, MediaInfo, Movie, SubtitleTrack, Tag } from "./types";
 import { authHeader, getAdminToken, setAdminToken } from "./auth";
 
 // The browser talks to the host-exposed ports. Override at build time with
@@ -95,6 +95,7 @@ type ApiMovie = {
   manifest_url?: string | null;
   hdr_manifest_url?: string | null;
   dash_url?: string | null;
+  storyboard_url?: string | null;
   thumbnail_url?: string | null;
   poster_url?: string | null;
   backdrop_url?: string | null;
@@ -110,6 +111,12 @@ type ApiMovie = {
   interp_target_fps?: number | null;
   interp_status?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
   interp_detail?: string | null;
+  interp_manifest_url?: string | null;
+  interp_fps?: number | null;
+  interp_progress?: number | null;
+  interp_stage?: string | null;
+  interp_started_at?: number | null;
+  extract_tasks?: ExtractTask[];
   created_at?: string;
 };
 
@@ -208,6 +215,13 @@ export function mapMovie(m: ApiMovie): Movie {
     interpTargetFps: m.interp_target_fps ?? null,
     interpStatus: m.interp_status ?? null,
     interpDetail: m.interp_detail ?? null,
+    storyboardUrl: m.storyboard_url ?? null,
+    interpManifestUrl: m.interp_manifest_url ?? null,
+    interpFps: m.interp_fps ?? null,
+    interpProgress: m.interp_progress ?? null,
+    interpStage: m.interp_stage ?? null,
+    interpStartedAt: m.interp_started_at ?? null,
+    extractTasks: m.extract_tasks ?? [],
   };
 }
 
@@ -384,9 +398,11 @@ export async function retranscodeMovie(movieId: string): Promise<void> {
   if (!res.ok && res.status !== 202) throw new Error(`re-transcode failed: ${res.status}`);
 }
 
-/** Boost an existing title's frame rate via I/O Framer interpolation (re-transcodes
-    from source; admin). The worker skips + records a reason if the source is already
-    high-fps / too tall / too long / HDR. */
+/** Add a NON-destructive smoothed (interpolated) rendition to a title via I/O
+    Framer (admin). The original ladder is left intact; the worker publishes the
+    smoothed one to {id}/interp/ and links it via interp_manifest_url, which the
+    player exposes as a Smooth toggle. Skips + records a reason if the source is
+    already high-fps / too tall / too long / HDR. */
 export async function enhanceFps(movieId: string, targetFps: number): Promise<void> {
   const res = await fetch(
     `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate`,
@@ -399,7 +415,28 @@ export async function enhanceFps(movieId: string, targetFps: number): Promise<vo
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (res.status === 409) throw new Error("Source is gone, or interpolation is disabled on the server.");
   if (res.status === 400) throw new Error("Invalid target fps.");
-  if (!res.ok && res.status !== 202) throw new Error(`boost fps failed: ${res.status}`);
+  if (!res.ok && res.status !== 202) throw new Error(`add smooth failed: ${res.status}`);
+}
+
+/** Create a NEW interpolated (optionally downscaled) copy of a title — e.g. a 4K
+    source smoothed into a 1080p·60fps copy. Leaves the original untouched (admin). */
+export async function enhanceFpsCopy(
+  movieId: string,
+  targetFps: number,
+  height?: number,
+): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate-copy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ target_fps: targetFps, height: height ?? null }),
+    },
+  );
+  if (res.status === 401) throw new Error("Not authorized — log in as admin.");
+  if (res.status === 409) throw new Error("Source is gone, or interpolation is disabled on the server.");
+  if (res.status === 400) throw new Error("Invalid fps/height.");
+  if (!res.ok && res.status !== 202) throw new Error(`create copy failed: ${res.status}`);
 }
 
 export async function createMovie(

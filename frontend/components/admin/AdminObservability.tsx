@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles } from "lucide-react";
+import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles, Music, Captions, Check } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 
@@ -24,6 +24,18 @@ function freeTone(pct: number): Tone {
 }
 function ratioTone(r: number): Tone {
   return r < 0.05 ? "good" : r < 0.15 ? "warn" : "bad";
+}
+
+/** Seconds → a compact human duration ("2m 40s", "1h 3m", "45s"). */
+function fmtDur(sec: number | null): string {
+  if (sec == null || !Number.isFinite(sec)) return "—";
+  const t = Math.max(0, Math.round(sec));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 function StatCard({
@@ -73,6 +85,13 @@ export function AdminObservability() {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState(false);
+  // Ticks every second so interpolation elapsed / ETA count up smoothly between
+  // the 4s catalog polls.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const load = useCallback(() => {
     fetchQoeStats()
@@ -227,6 +246,47 @@ export function AdminObservability() {
                       style={{ width: `${pct}%` }}
                     />
                   </div>
+                  {/* Live audio/subtitle extraction checklist — the 'todo list' of
+                      tracks the worker is pulling out of the source (VLC-style). */}
+                  {m.extractTasks && m.extractTasks.length > 0 && (
+                    <ul className="mt-2 flex flex-wrap gap-1.5">
+                      {m.extractTasks.map((t, i) => {
+                        const done = t.state === "done";
+                        const image = t.state === "image";
+                        return (
+                          <li
+                            key={`${t.kind}-${i}`}
+                            className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] ${
+                              done
+                                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                                : image
+                                  ? "border-white/10 bg-white/[0.03] text-white/35"
+                                  : "border-white/15 bg-white/5 text-white/55"
+                            }`}
+                            title={
+                              image
+                                ? "Image-based subtitle — not viewable in a browser"
+                                : `${t.kind}${t.lang ? ` · ${t.lang}` : ""}`
+                            }
+                          >
+                            {t.kind === "audio" ? (
+                              <Music className="h-3 w-3 shrink-0" />
+                            ) : (
+                              <Captions className="h-3 w-3 shrink-0" />
+                            )}
+                            <span className="max-w-[120px] truncate">{t.label}</span>
+                            {done ? (
+                              <Check className="h-3 w-3 shrink-0" />
+                            ) : image ? (
+                              <span className="uppercase tracking-wide">img</span>
+                            ) : (
+                              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </li>
               );
             })}
@@ -246,32 +306,69 @@ export function AdminObservability() {
             </span>
           </div>
           <ul className="divide-y divide-white/[0.06]">
-            {interpJobs.map((m) => (
-              <li key={m.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                <span className="min-w-0 flex-1 truncate text-white">{m.title}</span>
-                {m.interpTargetFps ? (
-                  <span className="whitespace-nowrap text-[11px] tabular-nums text-white/45">
-                    → {m.interpTargetFps} fps
-                  </span>
-                ) : null}
-                {m.interpDetail ? (
-                  <span
-                    className="hidden max-w-[260px] truncate text-[11px] text-white/40 sm:inline"
-                    title={m.interpDetail}
-                  >
-                    {m.interpDetail}
-                  </span>
-                ) : null}
-                <span
-                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold capitalize ${
-                    interpPill[m.interpStatus ?? "queued"] ?? interpPill.queued
-                  }`}
-                >
-                  {m.interpStatus === "processing" && <Loader2 className="h-3 w-3 animate-spin" />}
-                  {m.interpStatus}
-                </span>
-              </li>
-            ))}
+            {interpJobs.map((m) => {
+              const active = m.interpStatus === "processing";
+              // During the interpolation pass, prefer the I/O Framer's own 0-100 +
+              // stage (granular, and where the time actually goes on CPU); during
+              // the ladder encode fall back to the worker's overall progress.
+              const interpolating = active && m.stage === "interpolating";
+              const pct = Math.max(
+                0,
+                Math.min(100, (interpolating ? m.interpProgress : m.progress) ?? 0),
+              );
+              const stageLabel = interpolating
+                ? m.interpStage ?? "interpolating"
+                : m.stage ?? "working";
+              const elapsed =
+                active && m.interpStartedAt ? Math.max(0, nowMs / 1000 - m.interpStartedAt) : null;
+              // ETA only while interpolating (elapsed maps cleanly onto its 0-100);
+              // once encoding it's near the end, so we just show the stage/%.
+              const eta =
+                interpolating && pct > 3 && elapsed != null ? (elapsed * (100 - pct)) / pct : null;
+              return (
+                <li key={m.id} className="px-4 py-2.5 text-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="min-w-0 flex-1 truncate text-white">{m.title}</span>
+                    {m.interpTargetFps ? (
+                      <span className="whitespace-nowrap text-[11px] tabular-nums text-white/45">
+                        → {m.interpTargetFps} fps
+                      </span>
+                    ) : null}
+                    {active ? (
+                      <span className="flex items-center gap-2 whitespace-nowrap text-[11px] text-white/55">
+                        <span className="capitalize">{stageLabel}</span>
+                        <span className="tabular-nums text-white/75">{pct}%</span>
+                        {elapsed != null && <span className="text-white/35">· {fmtDur(elapsed)}</span>}
+                        {eta != null && <span className="text-sky-300/80">· ~{fmtDur(eta)} left</span>}
+                      </span>
+                    ) : m.interpDetail ? (
+                      <span
+                        className="hidden max-w-[260px] truncate text-[11px] text-white/40 sm:inline"
+                        title={m.interpDetail}
+                      >
+                        {m.interpDetail}
+                      </span>
+                    ) : null}
+                    <span
+                      className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold capitalize ${
+                        interpPill[m.interpStatus ?? "queued"] ?? interpPill.queued
+                      }`}
+                    >
+                      {active && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {m.interpStatus}
+                    </span>
+                  </div>
+                  {active && (
+                    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-sky-400 to-indigo-400 transition-[width] duration-500"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

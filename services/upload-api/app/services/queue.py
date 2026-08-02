@@ -51,6 +51,8 @@ def enqueue_transcode_job(
     mode: str = "transcode",
     interp: bool = False,
     interp_target_fps: int | None = None,
+    interp_height: int | None = None,
+    interp_variant: bool = False,
 ) -> None:
     """Add a transcode job to the durable, DynamoDB-backed queue.
 
@@ -78,6 +80,13 @@ def enqueue_transcode_job(
     if interp:
         body["interp"] = True
         body["interp_target_fps"] = interp_target_fps
+        if interp_height:
+            body["interp_height"] = interp_height
+        # A "variant" job publishes a separate, non-destructive smoothed ladder
+        # under {id}/interp/ and links it onto the title (Smooth toggle in the
+        # player) instead of replacing the original manifest.
+        if interp_variant:
+            body["interp_variant"] = True
     now = int(time.time())
     item = {
         "job_id": job_id,

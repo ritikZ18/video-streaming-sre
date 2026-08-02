@@ -21,8 +21,37 @@ export type SubtitleTrack = {
 };
 export type MediaInfo = {
   video?: { codec?: string | null; width?: number | null; height?: number | null; fps?: number | null } | null;
-  audio?: { language: string; label: string }[];
-  subtitles?: { language: string; label: string }[];
+  audio?: {
+    language: string;
+    label: string;
+    codec?: string | null;
+    channels?: number | null;
+    default?: boolean;
+    /** Muxed-in external track for a silent source. */
+    external?: boolean;
+  }[];
+  subtitles?: {
+    language: string;
+    label: string;
+    codec?: string | null;
+    forced?: boolean;
+    /** Text sub (convertible to WebVTT) vs image-based (PGS/VobSub). */
+    text?: boolean;
+    /** Whether a playable WebVTT sidecar was produced. */
+    extracted?: boolean;
+  }[];
+};
+
+/** One row of the live audio/subtitle extraction checklist shown while a title is
+ *  processing. `image` = an image-based subtitle that can't be shown in-browser. */
+export type ExtractTask = {
+  kind: "audio" | "subtitle";
+  label: string;
+  lang?: string;
+  codec?: string | null;
+  channels?: number | null;
+  forced?: boolean;
+  state: "pending" | "done" | "image";
 };
 
 export type Movie = {
@@ -67,4 +96,16 @@ export type Movie = {
   interpTargetFps?: number | null;
   interpStatus?: "queued" | "processing" | "done" | "skipped" | "failed" | null;
   interpDetail?: string | null;
+  /** WebVTT storyboard (hover-scrub sprite map) served beside the manifest. */
+  storyboardUrl?: string | null;
+  /** Non-destructive smoothed rendition; when set the player shows a Smooth toggle. */
+  interpManifestUrl?: string | null;
+  /** Target fps of the smoothed rendition (labels the Smooth toggle). */
+  interpFps?: number | null;
+  /** Live interpolation progress (I/O Framer 0-100) + stage + epoch it started. */
+  interpProgress?: number | null;
+  interpStage?: string | null;
+  interpStartedAt?: number | null;
+  /** Live audio/subtitle extraction checklist (populated while processing). */
+  extractTasks?: ExtractTask[];
 };

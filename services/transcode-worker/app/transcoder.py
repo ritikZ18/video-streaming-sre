@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import time
@@ -84,6 +85,89 @@ def extract_thumbnail(input_path: Path, output_path: Path, at_seconds: float = 3
     return result.returncode == 0 and output_path.exists()
 
 
+def _vtt_timestamp(seconds: float) -> str:
+    """Seconds -> a WebVTT cue timestamp 'HH:MM:SS.mmm'."""
+    ms = int(round(max(0.0, seconds) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+# Storyboard (hover-scrub) sprite geometry.
+_STORYBOARD_TILE_W = 160   # cell width in px; height derived from source aspect
+_STORYBOARD_COLS = 10      # cells per row in the mosaic
+_STORYBOARD_MAX_TILES = 100  # cap the number of thumbnails (one sprite sheet)
+
+
+def generate_storyboard(
+    input_path: Path,
+    out_dir: Path,
+    duration_seconds: float,
+    src_width: int | None,
+    src_height: int | None,
+) -> bool:
+    """Build a hover-scrub storyboard beside the manifest:
+
+    - ``storyboard.jpg`` — a grid mosaic of evenly spaced frames (one sprite sheet).
+    - ``thumbnails.vtt`` — one cue per cell, each pointing at its rectangle via the
+      ``storyboard.jpg#xywh=x,y,w,h`` media fragment, so the player can show the
+      frame under the cursor while scrubbing the seek bar.
+
+    Two cheap ffmpeg passes (extract evenly spaced small frames, then tile them).
+    Best-effort: returns False on any problem so it never breaks a transcode.
+    """
+    if not duration_seconds or duration_seconds <= 0:
+        return False
+    tile_w = _STORYBOARD_TILE_W
+    if src_width and src_height and src_width > 0:
+        tile_h = max(2, (int(round(tile_w * src_height / src_width)) & ~1))  # even
+    else:
+        tile_h = 90  # 16:9 fallback
+    interval = max(1.0, duration_seconds / _STORYBOARD_MAX_TILES)
+    frames_dir = Path(tempfile.mkdtemp(prefix="storyboard-"))
+    try:
+        extract = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path),
+             "-vf", f"fps={1.0 / interval:.6f},scale={tile_w}:{tile_h}",
+             "-q:v", "4", str(frames_dir / "%05d.jpg")],
+            capture_output=True, text=True, check=False,
+        )
+        frames = sorted(frames_dir.glob("*.jpg"))
+        if extract.returncode != 0 or not frames:
+            return False
+        n = len(frames)
+        cols = _STORYBOARD_COLS
+        rows = (n + cols - 1) // cols
+        sprite = out_dir / "storyboard.jpg"
+        tile = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-framerate", "1",
+             "-i", str(frames_dir / "%05d.jpg"),
+             "-vf", f"tile={cols}x{rows}", "-frames:v", "1", "-q:v", "4", str(sprite)],
+            capture_output=True, text=True, check=False,
+        )
+        if tile.returncode != 0 or not sprite.exists():
+            return False
+        lines = ["WEBVTT", ""]
+        for i in range(n):
+            t0 = i * interval
+            t1 = min((i + 1) * interval, duration_seconds)
+            x = (i % cols) * tile_w
+            y = (i // cols) * tile_h
+            lines += [
+                f"{_vtt_timestamp(t0)} --> {_vtt_timestamp(t1)}",
+                f"storyboard.jpg#xywh={x},{y},{tile_w},{tile_h}",
+                "",
+            ]
+        (out_dir / "thumbnails.vtt").write_text("\n".join(lines), encoding="utf-8")
+        return True
+    except Exception as exc:  # noqa: BLE001 - storyboard is best-effort
+        logger.warning("storyboard_failed", error=str(exc)[:200])
+        return False
+    finally:
+        shutil.rmtree(frames_dir, ignore_errors=True)
+
+
 def probe_fps(input_path: Path) -> float:
     """Average frame rate of the first video stream (0.0 if unknown). Used by the
     interpolation guardrails (skip a source that is already high-fps)."""
@@ -141,7 +225,9 @@ def probe_media(input_path: Path) -> dict[str, Any]:
                 "codec": s.get("codec_name"),
                 "width": s.get("width"),
                 "height": s.get("height"),
-                "fps": _rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate")),
+                # Stored as an int — DynamoDB (boto3 resource) rejects Python floats,
+                # and a whole-number fps is all the UI shows. 23.976 -> 24.
+                "fps": round(_rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate"))),
                 # Color signalling — used to detect HDR (PQ/HLG) sources so they
                 # get an HDR-preserving HEVC tier + a tonemapped H.264 fallback.
                 "color_transfer": s.get("color_transfer"),

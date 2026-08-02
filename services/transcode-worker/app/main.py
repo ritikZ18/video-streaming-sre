@@ -31,6 +31,7 @@ from app.transcoder import (
     encode_ladder,
     extract_subtitles_batch,
     extract_thumbnail,
+    generate_storyboard,
     is_hdr,
     package_cmaf,
     probe_duration,
@@ -56,6 +57,35 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def _discover_extract_tasks(media: dict[str, Any]) -> list[dict[str, Any]]:
+    """The audio + subtitle tracks found in the source, as a checklist the admin
+    UI renders live (VLC-style). Audio always extracts; text subtitles convert to
+    WebVTT; image-based subtitles (PGS/VobSub) can't be shown in-browser, so they
+    start marked 'image' rather than sitting forever 'pending'. Order matches the
+    probe (all audio first, then subtitles) so the worker can flip entries done by
+    index as each track lands."""
+    tasks: list[dict[str, Any]] = []
+    for a in media.get("audio") or []:
+        tasks.append({
+            "kind": "audio",
+            "label": a.get("label") or "Audio",
+            "lang": a.get("language") or "und",
+            "codec": a.get("codec"),
+            "channels": a.get("channels"),
+            "state": "pending",
+        })
+    for s in media.get("subtitles") or []:
+        tasks.append({
+            "kind": "subtitle",
+            "label": s.get("label") or "Subtitle",
+            "lang": s.get("language") or "und",
+            "codec": s.get("codec"),
+            "forced": bool(s.get("forced")),
+            "state": "pending" if s.get("text") else "image",
+        })
+    return tasks
 
 
 def _rendition_ranges(n: int) -> list[tuple[int, int]]:
@@ -421,13 +451,18 @@ def _delete_prefix(bucket: str, prefix: str) -> None:
 
 def _cleanup_canceled(job_id: str, s3_key: str) -> None:
     """Tear down everything a canceled job left behind: catalog row, source
-    upload, and any partially-written HLS/DASH segments."""
+    upload, and any partially-written HLS/DASH segments.
+
+    The source is deleted ONLY when it lives under this job's own prefix — a copy
+    / smoothing job re-uses another title's source object, and deleting that would
+    destroy the original."""
     settings = get_settings()
     catalog.delete_row(job_id)
-    try:
-        _s3().delete_object(Bucket=settings.s3_video_bucket, Key=s3_key)
-    except (BotoCoreError, ClientError):
-        pass
+    if s3_key.startswith(f"{job_id}/"):
+        try:
+            _s3().delete_object(Bucket=settings.s3_video_bucket, Key=s3_key)
+        except (BotoCoreError, ClientError):
+            pass
     _delete_prefix(settings.s3_segments_bucket, job_id)
 
 
@@ -439,11 +474,18 @@ def _drop_poison_message(message: dict[str, Any], receipt_handle: str, receives:
     try:
         body = json.loads(message["Body"])
         job_id = body.get("job_id")
+        is_variant = bool(body.get("interp_variant"))
     except (ValueError, KeyError):
         job_id = None
-    logger.error("poison_message_dropped", job_id=job_id, receives=receives)
+        is_variant = False
+    logger.error("poison_message_dropped", job_id=job_id, receives=receives, variant=is_variant)
     if job_id:
-        catalog.delete_row(job_id)
+        if is_variant:
+            # A smoothing variant shares the ORIGINAL's id — never delete that row;
+            # just record the failure on its interp state.
+            catalog.update_interp(job_id, "failed", detail="smoothing failed repeatedly")
+        else:
+            catalog.delete_row(job_id)
     _delete_message(receipt_handle)
 
 
@@ -467,19 +509,26 @@ def _interp_skip_reason(
     return None
 
 
-def _call_io_framer(job_id: str, s3_key: str, target_fps: int, out_key: str, emit) -> None:
+def _call_io_framer(
+    job_id: str, s3_key: str, target_fps: int, out_key: str, emit,
+    interp_height: int | None = None,
+) -> None:
     """POST to the I/O Framer sidecar and poll to completion. Raises on failure,
-    timeout, or an unreachable sidecar so the caller can fall back to native fps."""
+    timeout, or an unreachable sidecar so the caller can fall back to native fps.
+
+    ``interp_height`` (optional) asks the sidecar to interpolate at that reduced
+    height — used for the "downscaled copy" (e.g. a 4K source smoothed at 1080p)."""
     settings = get_settings()
     base = settings.interp_service_url.rstrip("/")
-    payload = json.dumps(
-        {
-            "movie_id": job_id,
-            "target_fps": target_fps,
-            "source": {"s3_bucket": settings.s3_video_bucket, "s3_key": s3_key},
-            "output": {"s3_bucket": settings.s3_video_bucket, "s3_key": out_key},
-        }
-    ).encode()
+    body: dict[str, Any] = {
+        "movie_id": job_id,
+        "target_fps": target_fps,
+        "source": {"s3_bucket": settings.s3_video_bucket, "s3_key": s3_key},
+        "output": {"s3_bucket": settings.s3_video_bucket, "s3_key": out_key},
+    }
+    if interp_height:
+        body["options"] = {"max_height": interp_height}
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         f"{base}/interpolate", data=payload,
         headers={"content-type": "application/json"}, method="POST",
@@ -496,8 +545,11 @@ def _call_io_framer(job_id: str, s3_key: str, target_fps: int, out_key: str, emi
             return
         if status == "failed":
             raise RuntimeError(f"io-framer: {st.get('detail') or 'failed'}")
-        # Fold the sidecar's 0-100 into a small slice (5-18%) of the overall bar.
-        emit(min(18, 5 + int(0.13 * (st.get("progress") or 0))), "interpolating")
+        # Surface the sidecar's own 0-100 + stage on the row (for the live % / ETA
+        # in the UI), and fold it into a small slice (5-18%) of the overall bar.
+        prog = int(st.get("progress") or 0)
+        catalog.update_interp_progress(job_id, prog, st.get("stage") or "interpolating")
+        emit(min(18, 5 + int(0.13 * prog)), "interpolating")
         time.sleep(3)
     raise RuntimeError("io-framer timed out")
 
@@ -538,11 +590,14 @@ def _maybe_interpolate(
         return input_path, media, False
 
     catalog.update_interp(job_id, "processing")
+    # Anchor the elapsed/ETA clock for the UI at the start of this pass.
+    catalog.update_interp_progress(job_id, 0, "starting", started_at=time.time())
     logger.info("interp_start", job_id=job_id, target_fps=target, source_fps=round(src_fps, 2))
     mezz_key = f"{job_id}/interpolated.mp4"
+    interp_height = body.get("interp_height")
     interp_started = time.monotonic()
     try:
-        _call_io_framer(job_id, body["s3_key"], target, mezz_key, emit)
+        _call_io_framer(job_id, body["s3_key"], target, mezz_key, emit, interp_height=interp_height)
         mezz_path = tmpdir / "mezzanine.mp4"
         _download_input(settings.s3_video_bucket, mezz_key, mezz_path)
         video_media = probe_media(mezz_path)
@@ -571,8 +626,13 @@ def process_message(message: dict[str, Any]) -> None:
     job_id = body["job_id"]
     s3_key = body["s3_key"]
     mode = body.get("mode", "transcode")
+    # A smoothing VARIANT re-uses the title's own id but publishes a separate,
+    # non-destructive interpolated ladder under {id}/interp/ (the original {id}/
+    # ladder is left untouched); the player exposes it as a Smooth toggle.
+    is_variant = bool(body.get("interp_variant"))
+    out_prefix = f"{job_id}/interp" if is_variant else job_id
 
-    logger.info("job_start", job_id=job_id, s3_key=s3_key, mode=mode)
+    logger.info("job_start", job_id=job_id, s3_key=s3_key, mode=mode, variant=is_variant)
 
     started = time.monotonic()
     tmpdir = Path(tempfile.mkdtemp(prefix=f"streamsre-{job_id}-"))
@@ -609,7 +669,15 @@ def process_message(message: dict[str, Any]) -> None:
 
         seconds = probe_duration(input_path) or 0.0
         media = probe_media(input_path)
-        base = f"{settings.origin_base_url}/hls/{job_id}"
+        base = f"{settings.origin_base_url}/hls/{out_prefix}"
+
+        # Publish the audio/subtitle extraction checklist up front (before the long
+        # encode) so the admin panel shows a live 'todo list' of tracks for the whole
+        # job, not just a flash at the end. Each entry flips to done as its track
+        # lands. A smoothing variant adds no tracks, so it skips the checklist.
+        extract_tasks = [] if is_variant else _discover_extract_tasks(media)
+        if extract_tasks:
+            catalog.set_extract_tasks(job_id, extract_tasks)
 
         # Throttled catalog writer: overall progress % + current stage label.
         pstate: dict[str, Any] = {"t": 0.0, "pct": -1, "stage": None}
@@ -640,6 +708,14 @@ def process_message(message: dict[str, Any]) -> None:
             job_id, body, input_path, media, seconds, tmpdir, _emit
         )
         _ck()
+
+        # A smoothing variant exists only to add an interpolated rendition. If the
+        # guardrails skipped interpolation (already high-fps / too long / HDR …),
+        # there is nothing to add — _maybe_interpolate already recorded the reason
+        # on interp_status, so just stop instead of publishing a duplicate ladder.
+        if is_variant and not interp_ok:
+            logger.info("interp_variant_no_op", job_id=job_id)
+            return
 
         # 1) All video renditions in a SINGLE decode pass (GPU: decode once ->
         # scale_cuda per rendition -> nvenc). The ladder is chosen by the source
@@ -678,8 +754,11 @@ def process_message(message: dict[str, Any]) -> None:
         )
 
         # Persist the encoded renditions so a later audio-attach can re-package
-        # them WITHOUT re-encoding the video (the fast _remux_audio path).
-        _persist_renditions(job_id, video_sets)
+        # them WITHOUT re-encoding the video (the fast _remux_audio path). Skipped
+        # for a smoothing variant — it shares the title's id, so persisting would
+        # overwrite the ORIGINAL's renditions with the interpolated ones.
+        if not is_variant:
+            _persist_renditions(job_id, video_sets)
 
         # 2) Every audio track (per language) -> AAC. If the source is SILENT and
         # an admin attached an external track, mux that in instead.
@@ -691,6 +770,11 @@ def process_message(message: dict[str, Any]) -> None:
                 ap = renditions_dir / f"a_{a['index']}.mp4"
                 encode_audio(input_path, ap, a["stream_index"])
                 audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
+                # Flip this audio track's checklist entry to done as it lands (audio
+                # entries come first in extract_tasks, in probe order).
+                if a["index"] < len(extract_tasks):
+                    extract_tasks[a["index"]]["state"] = "done"
+                    catalog.set_extract_tasks(job_id, extract_tasks)
         else:
             ext_key = _find_external_audio(job_id)
             if ext_key:
@@ -706,11 +790,31 @@ def process_message(message: dict[str, Any]) -> None:
         _emit(85, "package")
         manifests = package_cmaf(video_sets, audio_tracks, output_dir)
 
+        # A smoothing VARIANT publishes only the interpolated ladder (+ its audio)
+        # under {id}/interp/ and links it onto the title via interp_manifest_url,
+        # leaving the original manifest/status untouched. Thumbnail / subtitles /
+        # storyboard all come from the original the player can toggle back to.
+        if is_variant:
+            _emit(95, "upload")
+            uploaded = _upload_directory(settings.s3_segments_bucket, out_prefix, output_dir)
+            SEGMENTS_UPLOADED.inc(uploaded)
+            variant_fps = int(body.get("interp_target_fps") or 0)
+            catalog.set_interp_variant(
+                job_id,
+                f"{base}/{manifests['hls'].name}",
+                f"{base}/{manifests['dash'].name}",
+                variant_fps,
+            )
+            logger.info("interp_variant_published", job_id=job_id, fps=variant_fps)
+            return
+
         # 4) Text subtitles -> sidecar WebVTT, ALL in a single demux pass (image
         # subs are listed, not converted). One pass instead of one-per-track.
         _ck()
         _emit(89, "subtitles")
         subtitle_tracks = []
+        extracted_sub_streams: set[int] = set()
+        _audio_count = len(media["audio"])
         for s, vtt in extract_subtitles_batch(input_path, media["subtitles"], output_dir / "subs"):
             subtitle_tracks.append({
                 "language": s["language"],
@@ -718,14 +822,31 @@ def process_message(message: dict[str, Any]) -> None:
                 "url": f"{base}/subs/{vtt.name}",
                 "forced": s["forced"],
             })
+            extracted_sub_streams.add(s["stream_index"])
+            # Flip the matching checklist entry done (subtitles follow audio in order).
+            _ti = _audio_count + s["index"]
+            if _ti < len(extract_tasks):
+                extract_tasks[_ti]["state"] = "done"
+        if extract_tasks:
+            catalog.set_extract_tasks(job_id, extract_tasks)
 
         _emit(92, "thumbnail")
         thumb_path = output_dir / "thumbnail.jpg"
         thumb_at = max(1.0, min(seconds * 0.1, 60.0)) if seconds else 3.0
         extract_thumbnail(input_path, thumb_path, thumb_at)
 
+        # Hover-scrub storyboard: a sprite sheet + WebVTT beside the manifest, so
+        # the player can preview the frame under the cursor on the seek bar.
+        _emit(94, "storyboard")
+        _sv = media.get("video") or {}
+        storyboard_ok = generate_storyboard(
+            input_path, output_dir, seconds,
+            int(_sv.get("width") or 0), int(_sv.get("height") or 0),
+        )
+        storyboard_url = f"{base}/thumbnails.vtt" if storyboard_ok else None
+
         _emit(95, "upload")
-        uploaded = _upload_directory(settings.s3_segments_bucket, job_id, output_dir)
+        uploaded = _upload_directory(settings.s3_segments_bucket, out_prefix, output_dir)
         SEGMENTS_UPLOADED.inc(uploaded)
 
         manifest_url = f"{base}/{manifests['hls'].name}"
@@ -738,11 +859,41 @@ def process_message(message: dict[str, Any]) -> None:
         thumbnail_url = f"{base}/thumbnail.jpg" if thumb_path.exists() else None
         duration = _format_duration(seconds) if seconds else None
 
+        # Top-level audio_tracks stays the minimal {language,label} the player needs;
+        # media_info carries the richer VLC-style detail (codec/channels/forced/etc.)
+        # for the Tracks panel, listing every source track — including image-based
+        # subtitles that aren't extractable in-browser.
         audio_meta = [{"language": a["language"], "label": a["label"]} for a in audio_tracks]
+        audio_media = [
+            {
+                "language": a["language"],
+                "label": a["label"],
+                "codec": a.get("codec"),
+                "channels": a.get("channels"),
+                "default": bool(a.get("default")),
+            }
+            for a in media["audio"]
+        ]
+        if not audio_media and audio_tracks:
+            # Source was silent; an admin-attached external track was muxed in.
+            audio_media = [
+                {"language": "und", "label": "Audio", "codec": "aac", "channels": 2, "external": True}
+            ]
+        subtitle_media = [
+            {
+                "language": s["language"],
+                "label": s["label"],
+                "codec": s.get("codec"),
+                "forced": bool(s.get("forced")),
+                "text": bool(s.get("text")),
+                "extracted": s.get("stream_index") in extracted_sub_streams,
+            }
+            for s in media["subtitles"]
+        ]
         media_info = {
             "video": media["video"],
-            "audio": audio_meta,
-            "subtitles": [{"language": s["language"], "label": s["label"]} for s in subtitle_tracks],
+            "audio": audio_media,
+            "subtitles": subtitle_media,
         }
         catalog.mark_ready(
             job_id,
@@ -754,6 +905,7 @@ def process_message(message: dict[str, Any]) -> None:
             audio_tracks=audio_meta,
             subtitle_tracks=subtitle_tracks,
             media_info=media_info,
+            storyboard_url=storyboard_url,
         )
         # A higher-fps ladder is now published — close out the interpolation state.
         if interp_ok:
@@ -768,8 +920,14 @@ def process_message(message: dict[str, Any]) -> None:
         # Cooperative cancel: tear down artifacts and return normally so the
         # SQS message is deleted (not retried). Not counted as a failure.
         TRANSCODE_JOBS_TOTAL.labels(status="canceled").inc()
-        logger.info("job_canceled", job_id=job_id)
-        _cleanup_canceled(job_id, s3_key)
+        logger.info("job_canceled", job_id=job_id, variant=is_variant)
+        if is_variant:
+            # Only the half-written interpolated ladder is disposable — the title
+            # itself (row, source, original ladder) must survive.
+            _delete_prefix(settings.s3_segments_bucket, out_prefix)
+            catalog.update_interp(job_id, "skipped", detail="smoothing canceled")
+        else:
+            _cleanup_canceled(job_id, s3_key)
         return
     except Exception as exc:
         TRANSCODE_JOBS_TOTAL.labels(status="failed").inc()

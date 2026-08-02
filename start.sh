@@ -4,8 +4,12 @@
 #   floci (local AWS emulator)  ->  Terraform infra  ->  Docker Compose services
 #
 # Usage:
-#   ./start.sh            # start floci + infra + services
-#   ./start.sh --seed     # also push a generated demo video through the pipeline
+#   ./start.sh                  # start floci + infra + services
+#   ./start.sh --seed           # also push a generated demo video through the pipeline
+#   ./start.sh --queue-clear     # purge ORPHAN transcode jobs (no catalog row) that
+#                                # grind in the background without showing on the UI
+#   ./start.sh --queue-clear all # purge EVERY queued job (nuclear; re-run start.sh
+#                                # afterwards and the reconciler re-queues live rows)
 #
 # Override the floci control script location if yours lives elsewhere:
 #   FLOCI=/path/to/floci.sh ./start.sh
@@ -23,6 +27,48 @@ log() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 floci_up() {
   curl -fsS "$FLOCI_HEALTH" >/dev/null 2>&1
 }
+
+# 0) Queue maintenance -------------------------------------------------------
+# The durable job queue (DynamoDB) can hold "orphan" jobs whose catalog row was
+# deleted mid-flight — they keep transcoding in the background but never show on
+# the frontend (there's no row to render). This purges them without a full
+# bring-up. Pass "all" to remove EVERY queued job. Requires the stack to be up.
+if [ "${1:-}" = "--queue-clear" ]; then
+  mode="${2:-orphans}"
+  log "Clearing transcode queue (mode: ${mode})"
+  if ! docker compose ps --status running transcode-worker >/dev/null 2>&1; then
+    echo "ERROR: transcode-worker is not running. Start the stack first (./start.sh)." >&2
+    exit 1
+  fi
+  docker compose exec -T transcode-worker python - "$mode" <<'PY'
+import sys
+from app import jobqueue, catalog
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "orphans"
+qt, ct = jobqueue._table(), catalog._table()
+items = qt.scan().get("Items", [])
+print(f"queue depth: {len(items)}")
+removed = kept = 0
+for it in items:
+    jid = it.get("job_id")
+    try:
+        row = ct.get_item(Key={"id": jid}).get("Item")
+    except Exception:
+        row = None
+    title = (row or {}).get("title", "<no catalog row>")
+    status = (row or {}).get("status", "-")
+    if mode == "all" or row is None:
+        qt.delete_item(Key={"job_id": jid})
+        removed += 1
+        print(f"  removed  {jid}  [{status}] {title}")
+    else:
+        kept += 1
+        print(f"  kept     {jid}  [{status}] {title}  (live row; pass 'all' to force)")
+print(f"done: removed {removed}, kept {kept}, depth now {qt.scan(Select='COUNT').get('Count', 0)}")
+PY
+  log "Queue clear complete."
+  exit 0
+fi
 
 # 1) Environment file --------------------------------------------------------
 if [ ! -f .env ]; then

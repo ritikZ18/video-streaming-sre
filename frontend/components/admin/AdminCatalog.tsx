@@ -15,6 +15,7 @@ import {
   Music,
   Play,
   Zap,
+  Copy,
 } from "lucide-react";
 import type { Movie } from "../../lib/types";
 import {
@@ -24,6 +25,7 @@ import {
   attachAudio,
   retranscodeMovie,
   enhanceFps,
+  enhanceFpsCopy,
   getInterpConfig,
   deleteMovie,
   type InterpConfig,
@@ -41,7 +43,10 @@ function posterOf(m: Movie): string | null {
 }
 
 function isProcessing(m: Movie): boolean {
-  return m.status === "processing" && !m.manifestUrl;
+  // A re-transcode / audio-remux keeps the old manifest playable while it runs, so
+  // "processing" must key off status alone (not the absence of a manifest) — else
+  // an in-flight re-encode wrongly shows "ready". Exclude TMDB display-only rows.
+  return m.status === "processing" && !m.displayOnly;
 }
 
 function VisChip({ v }: { v?: Movie["visibility"] }) {
@@ -272,7 +277,7 @@ function EditDrawer({
     initialPosterMode === "url" ? movie.posterUrl ?? "" : "",
   );
   const [busy, setBusy] = useState<
-    null | "save" | "retranscode" | "poster" | "backdrop" | "audio" | "interp" | "delete"
+    null | "save" | "retranscode" | "poster" | "backdrop" | "audio" | "interp" | "interpcopy" | "delete"
   >(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -283,7 +288,11 @@ function EditDrawer({
   // Frame interpolation (I/O Framer): shown only when the server enables it.
   const [interpCfg, setInterpCfg] = useState<InterpConfig | null>(null);
   const [fpsTarget, setFpsTarget] = useState(60);
+  const [copyHeight, setCopyHeight] = useState(1080);
   const curFps = Math.round(movie.mediaInfo?.video?.fps ?? 0) || null;
+  const curHeight = movie.mediaInfo?.video?.height ?? 0;
+  // Smaller-resolution copy options (only heights below the source).
+  const copyOptions = [720, 1080, 1440].filter((h) => !curHeight || h < curHeight);
   useEffect(() => {
     getInterpConfig()
       .then((c) => {
@@ -292,6 +301,15 @@ function EditDrawer({
       })
       .catch(() => {});
   }, []);
+  // Keep the copy-resolution a valid option for this source (prefer 1080p).
+  useEffect(() => {
+    if (!curHeight) return;
+    const opts = [720, 1080, 1440].filter((h) => h < curHeight);
+    if (opts.length && !opts.includes(copyHeight)) {
+      setCopyHeight(opts.includes(1080) ? 1080 : opts[opts.length - 1]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curHeight]);
 
   // A title "has audio" if the transcode found tracks (either embedded or a
   // previously-attached external one shows up as a track once it re-processes).
@@ -363,22 +381,35 @@ function EditDrawer({
   };
 
   const enhance = async () => {
-    if (!window.confirm(`Boost "${movie.title}" to ${fpsTarget} fps? It re-transcodes from the original source.`)) return;
+    if (!window.confirm(`Add a smooth ${fpsTarget} fps version of "${movie.title}"? The original stays as-is; the player gets a Smooth toggle once it finishes.`)) return;
     setBusy("interp");
     setErr(null);
     try {
       await enhanceFps(movie.id, fpsTarget);
+      // Non-destructive: the title stays ready/playable; only the interp state
+      // moves. The Smooth toggle appears in the player when the variant lands.
       onChanged({
         ...movie,
-        status: "processing",
-        progress: 0,
-        stage: "queued",
         interpRequested: true,
         interpTargetFps: fpsTarget,
         interpStatus: "queued",
         interpDetail: null,
       });
-      flash(`Boosting to ${fpsTarget} fps — re-transcoding`);
+      flash(`Smoothing to ${fpsTarget} fps — the Smooth toggle appears when it's ready`);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const enhanceCopy = async () => {
+    if (!window.confirm(`Create a ${copyHeight}p·${fpsTarget} copy of "${movie.title}"? The original is kept; a new title is added to the catalog.`)) return;
+    setBusy("interpcopy");
+    setErr(null);
+    try {
+      await enhanceFpsCopy(movie.id, fpsTarget, copyHeight);
+      flash(`Creating ${copyHeight}p·${fpsTarget} copy — it'll appear in the catalog`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -553,8 +584,9 @@ function EditDrawer({
               Current: <span className="text-white/80">{curFps ? `${curFps} fps` : "unknown"}</span>
               {movie.interpStatus && (
                 <span className="ml-1.5">
-                  · boost: <span className="capitalize text-white/70">{movie.interpStatus}</span>
+                  · smooth: <span className="capitalize text-white/70">{movie.interpStatus}</span>
                   {movie.interpTargetFps ? <span className="text-white/50"> → {movie.interpTargetFps} fps</span> : null}
+                  {movie.interpStatus === "done" ? <span className="text-emerald-300/70"> · toggle in player</span> : null}
                   {movie.interpDetail ? <span className="text-white/40"> ({movie.interpDetail})</span> : null}
                 </span>
               )}
@@ -564,27 +596,54 @@ function EditDrawer({
                 <Zap className="h-3.5 w-3.5" /> Already high frame-rate — no boost needed.
               </p>
             ) : (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <select
-                  aria-label="Target fps"
-                  value={fpsTarget}
-                  onChange={(e) => setFpsTarget(Number(e.target.value))}
-                  className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1.5 text-xs text-white outline-none focus:border-white/40"
-                >
-                  {[48, 60].filter((f) => f <= interpCfg.max_target_fps).map((f) => (
-                    <option key={f} value={f} className="bg-black">{f} fps</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  disabled={!!busy}
-                  onClick={enhance}
-                  className="inline-flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-semibold text-indigo-100 hover:bg-indigo-400/20 disabled:opacity-50"
-                >
-                  {busy === "interp" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-                  Boost FPS
-                </button>
-                <span className="text-[11px] text-white/40">re-transcodes from source</span>
+              <div className="mt-2 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    aria-label="Target fps"
+                    value={fpsTarget}
+                    onChange={(e) => setFpsTarget(Number(e.target.value))}
+                    className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1.5 text-xs text-white outline-none focus:border-white/40"
+                  >
+                    {[48, 60].filter((f) => f <= interpCfg.max_target_fps).map((f) => (
+                      <option key={f} value={f} className="bg-black">{f} fps</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!!busy}
+                    onClick={enhance}
+                    className="inline-flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-semibold text-indigo-100 hover:bg-indigo-400/20 disabled:opacity-50"
+                  >
+                    {busy === "interp" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                    Add Smooth
+                  </button>
+                  <span className="text-[11px] text-white/40">original kept · player toggle · native {curHeight ? `${curHeight}p` : "res"}</span>
+                </div>
+                {copyOptions.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-white/45">Smaller copy:</span>
+                    <select
+                      aria-label="Copy resolution"
+                      value={copyHeight}
+                      onChange={(e) => setCopyHeight(Number(e.target.value))}
+                      className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1.5 text-xs text-white outline-none focus:border-white/40"
+                    >
+                      {copyOptions.map((h) => (
+                        <option key={h} value={h} className="bg-black">{h}p</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!!busy}
+                      onClick={enhanceCopy}
+                      className="inline-flex items-center gap-2 rounded-lg border border-fuchsia-400/30 bg-fuchsia-400/10 px-3 py-1.5 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-400/20 disabled:opacity-50"
+                    >
+                      {busy === "interpcopy" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />}
+                      Create {copyHeight}p·{fpsTarget} copy
+                    </button>
+                    <span className="text-[11px] text-white/40">new title, original kept</span>
+                  </div>
+                )}
               </div>
             )}
           </div>

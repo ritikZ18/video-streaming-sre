@@ -67,6 +67,8 @@ class Movie(MovieBase):
     # decode HEVC, else it falls back to manifest_url (H.264).
     hdr_manifest_url: str | None = None
     dash_url: str | None = None
+    # WebVTT storyboard (hover-scrub sprite map) served beside the manifest.
+    storyboard_url: str | None = None
     # Auto-extracted poster frame (the worker sets this every transcode).
     thumbnail_url: str | None = None
     # Custom artwork uploaded by an admin; the worker never overwrites these, so
@@ -79,6 +81,10 @@ class Movie(MovieBase):
     audio_tracks: list[AudioTrack] = Field(default_factory=list)
     subtitle_tracks: list[SubtitleTrack] = Field(default_factory=list)
     media_info: dict[str, Any] | None = None
+    # Live audio/subtitle extraction checklist the worker writes during a transcode
+    # ({kind, label, lang, codec, state}); the admin panel renders it as a 'todo
+    # list'. Free-form dicts so the worker can evolve the shape without a migration.
+    extract_tasks: list[dict[str, Any]] = Field(default_factory=list)
     # True once an admin attaches an external audio track to a silent title. The
     # worker muxes it only when the source has no embedded audio; survives
     # re-transcodes (stored beside the segments, like custom artwork).
@@ -90,6 +96,17 @@ class Movie(MovieBase):
     interp_target_fps: int | None = None
     interp_status: InterpStatus | None = None
     interp_detail: str | None = None  # human-readable reason for skipped/failed
+    # A NON-destructive smoothed rendition published under {id}/interp/. When set,
+    # the player offers a "Smooth {interp_fps}fps" toggle that swaps to this ladder
+    # while the original manifest_url stays the default.
+    interp_manifest_url: str | None = None
+    interp_dash_url: str | None = None
+    interp_fps: int | None = None
+    # Live interpolation progress (I/O Framer's own 0-100 + stage) + the epoch it
+    # started, so the UI can show a real percentage, elapsed time and ETA.
+    interp_progress: int | None = None
+    interp_stage: str | None = None
+    interp_started_at: int | None = None
 
 
 class MoviePatch(BaseModel):
