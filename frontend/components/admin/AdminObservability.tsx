@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles } from "lucide-react";
+import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles, Music, Captions, Check } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 
@@ -246,6 +246,47 @@ export function AdminObservability() {
                       style={{ width: `${pct}%` }}
                     />
                   </div>
+                  {/* Live audio/subtitle extraction checklist — the 'todo list' of
+                      tracks the worker is pulling out of the source (VLC-style). */}
+                  {m.extractTasks && m.extractTasks.length > 0 && (
+                    <ul className="mt-2 flex flex-wrap gap-1.5">
+                      {m.extractTasks.map((t, i) => {
+                        const done = t.state === "done";
+                        const image = t.state === "image";
+                        return (
+                          <li
+                            key={`${t.kind}-${i}`}
+                            className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] ${
+                              done
+                                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                                : image
+                                  ? "border-white/10 bg-white/[0.03] text-white/35"
+                                  : "border-white/15 bg-white/5 text-white/55"
+                            }`}
+                            title={
+                              image
+                                ? "Image-based subtitle — not viewable in a browser"
+                                : `${t.kind}${t.lang ? ` · ${t.lang}` : ""}`
+                            }
+                          >
+                            {t.kind === "audio" ? (
+                              <Music className="h-3 w-3 shrink-0" />
+                            ) : (
+                              <Captions className="h-3 w-3 shrink-0" />
+                            )}
+                            <span className="max-w-[120px] truncate">{t.label}</span>
+                            {done ? (
+                              <Check className="h-3 w-3 shrink-0" />
+                            ) : image ? (
+                              <span className="uppercase tracking-wide">img</span>
+                            ) : (
+                              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </li>
               );
             })}

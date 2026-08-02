@@ -19,9 +19,11 @@ import {
   Rewind,
   FastForward,
   Sparkles,
+  ListChecks,
+  Check,
 } from "lucide-react";
 import { sendBeacon, type BeaconEvent } from "../../lib/api";
-import type { SubtitleTrack } from "../../lib/types";
+import type { MediaInfo, SubtitleTrack } from "../../lib/types";
 
 type VideoPlayerProps = {
   src: string | null;
@@ -35,6 +37,8 @@ type VideoPlayerProps = {
   interpSrc?: string | null;
   /** Target fps of the smoothed rendition (labels the toggle). */
   interpFps?: number | null;
+  /** Full source track list (VLC-style) for the Tracks panel. */
+  mediaInfo?: MediaInfo | null;
 };
 
 type Level = { index: number; height: number };
@@ -78,6 +82,16 @@ function parseStoryboard(text: string, vttUrl: string): Storyboard | null {
   return cues.length ? { sprite, cues } : null;
 }
 
+/** Channel count → a friendly label (2 → "stereo", 6 → "5.1"). */
+function channelsLabel(n?: number | null): string {
+  if (!n || n <= 0) return "";
+  if (n === 1) return "mono";
+  if (n === 2) return "stereo";
+  if (n === 6) return "5.1";
+  if (n === 8) return "7.1";
+  return `${n}ch`;
+}
+
 function fmt(t: number): string {
   if (!Number.isFinite(t) || t < 0) return "0:00";
   const s = Math.floor(t % 60);
@@ -109,6 +123,7 @@ export function VideoPlayer({
   storyboardUrl,
   interpSrc,
   interpFps,
+  mediaInfo,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -139,6 +154,7 @@ export function VideoPlayer({
   const [rate, setRate] = useState(1);
 
   const [showStats, setShowStats] = useState(false);
+  const [showTracks, setShowTracks] = useState(false);
   const [bitrateKbps, setBitrateKbps] = useState(0);
   const [rebuffers, setRebuffers] = useState(0);
   const [startupMs, setStartupMs] = useState<number | null>(null);
@@ -875,6 +891,118 @@ export function VideoPlayer({
         )}
       </AnimatePresence>
 
+      {/* Tracks — VLC-style overview of every extracted audio + subtitle track. */}
+      <AnimatePresence>
+        {showTracks && (
+          <motion.div
+            {...menuAnim}
+            className="absolute right-3 top-12 z-20 max-h-[70%] w-64 overflow-y-auto rounded-xl bg-black/80 p-3 text-[11px] text-white/80 backdrop-blur-xl"
+          >
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+              <ListChecks className="h-3 w-3" /> Tracks
+            </div>
+
+            {mediaInfo?.video && (
+              <div className="mb-2">
+                <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-white/30">Video</div>
+                <div className="rounded px-2 py-1 text-white/70">
+                  {[
+                    mediaInfo.video.codec?.toUpperCase(),
+                    mediaInfo.video.width && mediaInfo.video.height
+                      ? `${mediaInfo.video.width}×${mediaInfo.video.height}`
+                      : null,
+                    mediaInfo.video.fps ? `${mediaInfo.video.fps} fps` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || "—"}
+                </div>
+              </div>
+            )}
+
+            <div className="mb-2">
+              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-white/30">
+                Audio{audioTracks.length ? ` · ${audioTracks.length}` : ""}
+              </div>
+              {audioTracks.length === 0 ? (
+                <div className="px-2 py-1 text-white/30">No audio track</div>
+              ) : (
+                audioTracks.map((a) => {
+                  const info = mediaInfo?.audio?.[a.index];
+                  const detail = [info?.codec?.toUpperCase(), channelsLabel(info?.channels)]
+                    .filter(Boolean)
+                    .join(" · ");
+                  const active = currentAudio === a.index;
+                  return (
+                    <button
+                      key={a.index}
+                      type="button"
+                      onClick={() => setAudio(a.index)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-white/10 ${active ? "text-indigo-300" : ""}`}
+                    >
+                      <Check className={`h-3 w-3 shrink-0 ${active ? "opacity-100" : "opacity-0"}`} />
+                      <span className="truncate">{a.label}</span>
+                      {detail && <span className="ml-auto shrink-0 whitespace-nowrap text-white/35">{detail}</span>}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {(subtitleTracks.length > 0 ||
+              (mediaInfo?.subtitles ?? []).some((s) => s.text === false)) && (
+              <div>
+                <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-white/30">
+                  Subtitles{subtitleTracks.length ? ` · ${subtitleTracks.length}` : ""}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCaption(-1)}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-white/10 ${currentCaption === -1 ? "text-indigo-300" : ""}`}
+                >
+                  <Check className={`h-3 w-3 shrink-0 ${currentCaption === -1 ? "opacity-100" : "opacity-0"}`} />
+                  <span>Off</span>
+                </button>
+                {subtitleTracks.map((t, i) => {
+                  const active = currentCaption === i;
+                  return (
+                    <button
+                      key={t.url}
+                      type="button"
+                      onClick={() => setCaption(i)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-white/10 ${active ? "text-indigo-300" : ""}`}
+                    >
+                      <Check className={`h-3 w-3 shrink-0 ${active ? "opacity-100" : "opacity-0"}`} />
+                      <span className="truncate">{t.label}</span>
+                      {t.forced && (
+                        <span className="ml-auto shrink-0 rounded bg-white/10 px-1 text-[9px] uppercase tracking-wide text-white/50">
+                          forced
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                {/* Image-based subs (PGS/VobSub) can't render in-browser — listed but greyed. */}
+                {(mediaInfo?.subtitles ?? [])
+                  .filter((s) => s.text === false)
+                  .map((s, i) => (
+                    <div
+                      key={`img-${s.language}-${i}`}
+                      className="flex items-center gap-2 rounded px-2 py-1 text-white/30"
+                      title="Image-based subtitle — not viewable in a browser"
+                    >
+                      <span className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{s.label}</span>
+                      <span className="ml-auto shrink-0 rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-white/30">
+                        image
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <motion.div
         animate={{ opacity: showControls || !playing ? 1 : 0 }}
         className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8"
@@ -956,8 +1084,8 @@ export function VideoPlayer({
           <span className="text-xs tabular-nums text-white/80">{fmt(current)} / {fmt(duration)}</span>
 
           <div className="ml-auto flex items-center gap-1">
-            {/* Audio / language */}
-            {audioTracks.length > 1 && (
+            {/* Audio / language — shown whenever there's at least one track (VLC-style). */}
+            {audioTracks.length >= 1 && (
               <div className="relative">
                 <button type="button" onClick={() => setMenu(menu === "audio" ? null : "audio")} className={menuBtn} aria-label="Audio">
                   <Languages className="h-4 w-4" />
@@ -965,11 +1093,18 @@ export function VideoPlayer({
                 <AnimatePresence>
                   {menu === "audio" && (
                     <motion.div {...menuAnim} className="absolute bottom-9 right-0 min-w-[140px] rounded-lg bg-black/90 p-1 text-xs shadow-xl ring-1 ring-white/10">
-                      {audioTracks.map((a) => (
-                        <button key={a.index} type="button" onClick={() => setAudio(a.index)} className={itemCls(currentAudio === a.index)}>
-                          {a.label}
-                        </button>
-                      ))}
+                      {audioTracks.map((a) => {
+                        const info = mediaInfo?.audio?.[a.index];
+                        const detail = [info?.codec?.toUpperCase(), channelsLabel(info?.channels)]
+                          .filter(Boolean)
+                          .join(" · ");
+                        return (
+                          <button key={a.index} type="button" onClick={() => setAudio(a.index)} className={itemCls(currentAudio === a.index)}>
+                            {a.label}
+                            {detail && <span className="ml-1 text-white/35">{detail}</span>}
+                          </button>
+                        );
+                      })}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1051,7 +1186,16 @@ export function VideoPlayer({
               </button>
             )}
 
-            <button type="button" onClick={() => setShowStats((s) => !s)} aria-label="Stats" className={`rounded p-1 hover:bg-white/15 ${showStats ? "text-indigo-300" : ""}`}>
+            {/* Tracks — VLC-style panel of every extracted audio + subtitle track. */}
+            <button
+              type="button"
+              onClick={() => { setShowTracks((s) => !s); setShowStats(false); }}
+              aria-label="Tracks"
+              className={`rounded p-1 hover:bg-white/15 ${showTracks ? "text-indigo-300" : ""}`}
+            >
+              <ListChecks className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={() => { setShowStats((s) => !s); setShowTracks(false); }} aria-label="Stats" className={`rounded p-1 hover:bg-white/15 ${showStats ? "text-indigo-300" : ""}`}>
               <Gauge className="h-4 w-4" />
             </button>
             <button

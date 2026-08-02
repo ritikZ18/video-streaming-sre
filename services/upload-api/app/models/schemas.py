@@ -81,6 +81,10 @@ class Movie(MovieBase):
     audio_tracks: list[AudioTrack] = Field(default_factory=list)
     subtitle_tracks: list[SubtitleTrack] = Field(default_factory=list)
     media_info: dict[str, Any] | None = None
+    # Live audio/subtitle extraction checklist the worker writes during a transcode
+    # ({kind, label, lang, codec, state}); the admin panel renders it as a 'todo
+    # list'. Free-form dicts so the worker can evolve the shape without a migration.
+    extract_tasks: list[dict[str, Any]] = Field(default_factory=list)
     # True once an admin attaches an external audio track to a silent title. The
     # worker muxes it only when the source has no embedded audio; survives
     # re-transcodes (stored beside the segments, like custom artwork).

@@ -1,4 +1,4 @@
-import type { AudioTrack, MediaInfo, Movie, SubtitleTrack, Tag } from "./types";
+import type { AudioTrack, ExtractTask, MediaInfo, Movie, SubtitleTrack, Tag } from "./types";
 import { authHeader, getAdminToken, setAdminToken } from "./auth";
 
 // The browser talks to the host-exposed ports. Override at build time with
@@ -116,6 +116,7 @@ type ApiMovie = {
   interp_progress?: number | null;
   interp_stage?: string | null;
   interp_started_at?: number | null;
+  extract_tasks?: ExtractTask[];
   created_at?: string;
 };
 
@@ -220,6 +221,7 @@ export function mapMovie(m: ApiMovie): Movie {
     interpProgress: m.interp_progress ?? null,
     interpStage: m.interp_stage ?? null,
     interpStartedAt: m.interp_started_at ?? null,
+    extractTasks: m.extract_tasks ?? [],
   };
 }
 

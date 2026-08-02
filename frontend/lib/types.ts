@@ -21,8 +21,37 @@ export type SubtitleTrack = {
 };
 export type MediaInfo = {
   video?: { codec?: string | null; width?: number | null; height?: number | null; fps?: number | null } | null;
-  audio?: { language: string; label: string }[];
-  subtitles?: { language: string; label: string }[];
+  audio?: {
+    language: string;
+    label: string;
+    codec?: string | null;
+    channels?: number | null;
+    default?: boolean;
+    /** Muxed-in external track for a silent source. */
+    external?: boolean;
+  }[];
+  subtitles?: {
+    language: string;
+    label: string;
+    codec?: string | null;
+    forced?: boolean;
+    /** Text sub (convertible to WebVTT) vs image-based (PGS/VobSub). */
+    text?: boolean;
+    /** Whether a playable WebVTT sidecar was produced. */
+    extracted?: boolean;
+  }[];
+};
+
+/** One row of the live audio/subtitle extraction checklist shown while a title is
+ *  processing. `image` = an image-based subtitle that can't be shown in-browser. */
+export type ExtractTask = {
+  kind: "audio" | "subtitle";
+  label: string;
+  lang?: string;
+  codec?: string | null;
+  channels?: number | null;
+  forced?: boolean;
+  state: "pending" | "done" | "image";
 };
 
 export type Movie = {
@@ -77,4 +106,6 @@ export type Movie = {
   interpProgress?: number | null;
   interpStage?: string | null;
   interpStartedAt?: number | null;
+  /** Live audio/subtitle extraction checklist (populated while processing). */
+  extractTasks?: ExtractTask[];
 };

@@ -59,6 +59,35 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _discover_extract_tasks(media: dict[str, Any]) -> list[dict[str, Any]]:
+    """The audio + subtitle tracks found in the source, as a checklist the admin
+    UI renders live (VLC-style). Audio always extracts; text subtitles convert to
+    WebVTT; image-based subtitles (PGS/VobSub) can't be shown in-browser, so they
+    start marked 'image' rather than sitting forever 'pending'. Order matches the
+    probe (all audio first, then subtitles) so the worker can flip entries done by
+    index as each track lands."""
+    tasks: list[dict[str, Any]] = []
+    for a in media.get("audio") or []:
+        tasks.append({
+            "kind": "audio",
+            "label": a.get("label") or "Audio",
+            "lang": a.get("language") or "und",
+            "codec": a.get("codec"),
+            "channels": a.get("channels"),
+            "state": "pending",
+        })
+    for s in media.get("subtitles") or []:
+        tasks.append({
+            "kind": "subtitle",
+            "label": s.get("label") or "Subtitle",
+            "lang": s.get("language") or "und",
+            "codec": s.get("codec"),
+            "forced": bool(s.get("forced")),
+            "state": "pending" if s.get("text") else "image",
+        })
+    return tasks
+
+
 def _rendition_ranges(n: int) -> list[tuple[int, int]]:
     """Overall-% window for each rendition (renditions occupy 5-85%; later,
     larger renditions get a bigger slice)."""
@@ -642,6 +671,14 @@ def process_message(message: dict[str, Any]) -> None:
         media = probe_media(input_path)
         base = f"{settings.origin_base_url}/hls/{out_prefix}"
 
+        # Publish the audio/subtitle extraction checklist up front (before the long
+        # encode) so the admin panel shows a live 'todo list' of tracks for the whole
+        # job, not just a flash at the end. Each entry flips to done as its track
+        # lands. A smoothing variant adds no tracks, so it skips the checklist.
+        extract_tasks = [] if is_variant else _discover_extract_tasks(media)
+        if extract_tasks:
+            catalog.set_extract_tasks(job_id, extract_tasks)
+
         # Throttled catalog writer: overall progress % + current stage label.
         pstate: dict[str, Any] = {"t": 0.0, "pct": -1, "stage": None}
 
@@ -733,6 +770,11 @@ def process_message(message: dict[str, Any]) -> None:
                 ap = renditions_dir / f"a_{a['index']}.mp4"
                 encode_audio(input_path, ap, a["stream_index"])
                 audio_tracks.append({"path": ap, "language": a["language"], "label": a["label"]})
+                # Flip this audio track's checklist entry to done as it lands (audio
+                # entries come first in extract_tasks, in probe order).
+                if a["index"] < len(extract_tasks):
+                    extract_tasks[a["index"]]["state"] = "done"
+                    catalog.set_extract_tasks(job_id, extract_tasks)
         else:
             ext_key = _find_external_audio(job_id)
             if ext_key:
@@ -771,6 +813,8 @@ def process_message(message: dict[str, Any]) -> None:
         _ck()
         _emit(89, "subtitles")
         subtitle_tracks = []
+        extracted_sub_streams: set[int] = set()
+        _audio_count = len(media["audio"])
         for s, vtt in extract_subtitles_batch(input_path, media["subtitles"], output_dir / "subs"):
             subtitle_tracks.append({
                 "language": s["language"],
@@ -778,6 +822,13 @@ def process_message(message: dict[str, Any]) -> None:
                 "url": f"{base}/subs/{vtt.name}",
                 "forced": s["forced"],
             })
+            extracted_sub_streams.add(s["stream_index"])
+            # Flip the matching checklist entry done (subtitles follow audio in order).
+            _ti = _audio_count + s["index"]
+            if _ti < len(extract_tasks):
+                extract_tasks[_ti]["state"] = "done"
+        if extract_tasks:
+            catalog.set_extract_tasks(job_id, extract_tasks)
 
         _emit(92, "thumbnail")
         thumb_path = output_dir / "thumbnail.jpg"
@@ -808,11 +859,41 @@ def process_message(message: dict[str, Any]) -> None:
         thumbnail_url = f"{base}/thumbnail.jpg" if thumb_path.exists() else None
         duration = _format_duration(seconds) if seconds else None
 
+        # Top-level audio_tracks stays the minimal {language,label} the player needs;
+        # media_info carries the richer VLC-style detail (codec/channels/forced/etc.)
+        # for the Tracks panel, listing every source track — including image-based
+        # subtitles that aren't extractable in-browser.
         audio_meta = [{"language": a["language"], "label": a["label"]} for a in audio_tracks]
+        audio_media = [
+            {
+                "language": a["language"],
+                "label": a["label"],
+                "codec": a.get("codec"),
+                "channels": a.get("channels"),
+                "default": bool(a.get("default")),
+            }
+            for a in media["audio"]
+        ]
+        if not audio_media and audio_tracks:
+            # Source was silent; an admin-attached external track was muxed in.
+            audio_media = [
+                {"language": "und", "label": "Audio", "codec": "aac", "channels": 2, "external": True}
+            ]
+        subtitle_media = [
+            {
+                "language": s["language"],
+                "label": s["label"],
+                "codec": s.get("codec"),
+                "forced": bool(s.get("forced")),
+                "text": bool(s.get("text")),
+                "extracted": s.get("stream_index") in extracted_sub_streams,
+            }
+            for s in media["subtitles"]
+        ]
         media_info = {
             "video": media["video"],
-            "audio": audio_meta,
-            "subtitles": [{"language": s["language"], "label": s["label"]} for s in subtitle_tracks],
+            "audio": audio_media,
+            "subtitles": subtitle_media,
         }
         catalog.mark_ready(
             job_id,

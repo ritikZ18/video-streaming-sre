@@ -261,6 +261,23 @@ def update_interp_progress(
         logger.warning("catalog_interp_progress_skipped", movie_id=movie_id, error=str(exc))
 
 
+def set_extract_tasks(movie_id: str, tasks: list) -> None:
+    """Best-effort write of the audio/subtitle extraction checklist for a running
+    transcode: a list of ``{kind, label, lang, codec, state}`` the admin UI renders
+    as a live 'todo list' (pending -> done, image-based subs marked 'image').
+    Persisted right after the probe so it shows for the whole job, then rewritten as
+    each track lands. Never raises; a missing row (canceled/deleted) is ignored."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression="SET extract_tasks = :et",
+            ExpressionAttributeValues={":et": _ddb_safe(tasks)},
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - checklist is non-critical
+        logger.warning("catalog_set_extract_tasks_skipped", movie_id=movie_id, error=str(exc))
+
+
 def mark_ready(
     movie_id: str,
     manifest_url: str,

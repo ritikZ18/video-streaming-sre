@@ -5,7 +5,7 @@ import { ChevronLeft, Loader2 } from "lucide-react";
 import { Navbar } from "../../components/layout/Navbar";
 import { VideoPlayer } from "../../components/player/VideoPlayer";
 import { getMovie } from "../../lib/api";
-import type { SubtitleTrack } from "../../lib/types";
+import type { MediaInfo, SubtitleTrack } from "../../lib/types";
 
 /** Whether THIS browser can actually decode 10-bit HDR HEVC smoothly — not just
  * claim to. `mediaCapabilities.decodingInfo` is far more accurate than
@@ -46,6 +46,7 @@ export default function PlayerPage() {
     storyboard: null, interpUrl: null, interpFps: null,
   });
   const [subs, setSubs] = useState<SubtitleTrack[]>([]);
+  const [media, setMedia] = useState<MediaInfo | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -69,6 +70,7 @@ export default function PlayerPage() {
         .then(async (m) => {
           if (m) {
             setSubs(m.subtitleTracks ?? []);
+            setMedia(m.mediaInfo ?? null);
             // HDR titles ship an HEVC master AND an H.264 one. Use HEVC only if the
             // browser can really decode it; otherwise the universal H.264 master.
             const url =
@@ -122,6 +124,7 @@ export default function PlayerPage() {
               storyboardUrl={p.storyboard}
               interpSrc={p.interpUrl}
               interpFps={p.interpFps}
+              mediaInfo={media}
             />
           )}
         </div>
