@@ -172,6 +172,38 @@ services:
     ports:
       - "8001:8001"
 
+  # --- Public gateway + Cloudflare tunnel (opt-in: `--profile tunnel`) ---
+  # The gateway is the SINGLE tunnel target: it fans out to upload-api (reads
+  # only), beacon-collector and origin by path, and refuses every write/admin
+  # path. cloudflared publishes it over an OUTBOUND quick tunnel — no open port,
+  # no public IP, no router config. Both are off by default; start them with
+  # `docker compose --profile tunnel up` (or ./run.sh --tunnel).
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: streamsre-gateway
+    profiles: [tunnel]
+    depends_on:
+      - upload-api
+      - origin
+      - beacon-collector
+    ports:
+      - "8088:8088"   # host access to eyeball the public surface locally
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: streamsre-cloudflared
+    profiles: [tunnel]
+    depends_on:
+      - gateway
+    # Quick tunnel: a random *.trycloudflare.com hostname, no account/domain.
+    # It changes on every restart, so ./run.sh --tunnel resolves it at runtime.
+    # cloudflared keeps running (reconnect loop) rather than exiting, so
+    # restart: unless-stopped is safe here (unlike a backend that can exit fast).
+    command: tunnel --no-autoupdate --url http://gateway:8088
+    restart: unless-stopped
+
   # --- Frontend (Next.js, served via Nginx in Dockerfile) ---
   frontend:
     build:

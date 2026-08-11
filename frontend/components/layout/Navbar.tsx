@@ -4,17 +4,21 @@ import { usePathname, useRouter } from "next/navigation";
 import { Lock } from "lucide-react";
 import { SearchBar } from "../common/SearchBar";
 import { Logo } from "./Logo";
+import { BackendStatus } from "./BackendStatus";
+import { VIEWER_ONLY } from "../../lib/backend";
 
 const NAV_ITEMS = [
   { label: "Home", href: "/" },
   { label: "Browse", href: "/browse" },
   { label: "Library", href: "/library" },
-  { label: "SRE", href: "/sre" },
+  // SRE is an operator/ops surface (Grafana/Prometheus) — hidden on the public viewer.
+  { label: "SRE", href: "/sre", adminOnly: true },
 ] as const;
 
 export function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
+  const navItems = NAV_ITEMS.filter((item) => !(VIEWER_ONLY && "adminOnly" in item && item.adminOnly));
 
   return (
     // Consistently transparent — a simple top-down fade for legibility, no
@@ -35,7 +39,7 @@ export function Navbar() {
           </span>
         </button>
         <div className="flex gap-1">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const active = pathname === item.href;
             return (
               <button
@@ -57,14 +61,17 @@ export function Navbar() {
       </div>
       <div className="flex items-center gap-3">
         <SearchBar />
-        <button
-          type="button"
-          onClick={() => router.push("/admin")}
-          className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-glow-soft transition-colors hover:bg-white/20"
-        >
-          <Lock className="h-4 w-4" />
-          Admin
-        </button>
+        <BackendStatus />
+        {!VIEWER_ONLY && (
+          <button
+            type="button"
+            onClick={() => router.push("/admin")}
+            className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-glow-soft transition-colors hover:bg-white/20"
+          >
+            <Lock className="h-4 w-4" />
+            Admin
+          </button>
+        )}
       </div>
     </nav>
   );

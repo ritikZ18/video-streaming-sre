@@ -1,15 +1,28 @@
 import type { AudioTrack, ExtractTask, MediaInfo, Movie, SubtitleTrack, Tag } from "./types";
 import { authHeader, getAdminToken, setAdminToken } from "./auth";
+import {
+  apiUrl,
+  originUrl,
+  beaconUrl,
+  rewriteOriginUrl,
+  hasBackendOverride,
+  backendOverride,
+  clearBackendOverride,
+} from "./backend";
 
-// The browser talks to the host-exposed ports. Override at build time with
-// NEXT_PUBLIC_API_URL / NEXT_PUBLIC_ORIGIN_URL if you remap them.
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-export const ORIGIN_URL =
-  process.env.NEXT_PUBLIC_ORIGIN_URL ?? "http://localhost:8080";
-
-export const BEACON_URL =
-  process.env.NEXT_PUBLIC_BEACON_URL ?? "http://localhost:8001";
+// Backend URLs are resolved at RUNTIME (see lib/backend.ts): a ?api= link or a
+// stored value points the app at a Cloudflare-tunnel gateway, so the public
+// viewer build on Render reaches a laptop-hosted backend without a rebuild.
+// Local dev falls back to the per-service build defaults.
+export {
+  apiUrl,
+  originUrl,
+  beaconUrl,
+  rewriteOriginUrl,
+  hasBackendOverride,
+  backendOverride,
+  clearBackendOverride,
+};
 
 // Keep in sync with upload-api MAX_UPLOAD_SIZE_MB.
 export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 5000);
@@ -35,13 +48,13 @@ export function sendBeacon(batch: {
   try {
     // sendBeacon survives page unload; fall back to fetch(keepalive).
     if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-      navigator.sendBeacon(`${BEACON_URL}/api/v1/beacon/`, new Blob([body], { type: "application/json" }));
+      navigator.sendBeacon(`${beaconUrl()}/api/v1/beacon/`, new Blob([body], { type: "application/json" }));
       return;
     }
   } catch {
     /* fall through */
   }
-  void fetch(`${BEACON_URL}/api/v1/beacon/`, {
+  void fetch(`${beaconUrl()}/api/v1/beacon/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
@@ -76,7 +89,7 @@ export type QoeStats = {
 
 /** Live rolling QoE aggregation from the beacon collector (admin dashboard). */
 export async function fetchQoeStats(): Promise<QoeStats> {
-  const res = await fetch(`${BEACON_URL}/api/v1/beacon/stats`, { cache: "no-store" });
+  const res = await fetch(`${beaconUrl()}/api/v1/beacon/stats`, { cache: "no-store" });
   if (!res.ok) throw new Error(`qoe stats failed: ${res.status}`);
   return (await res.json()) as QoeStats;
 }
@@ -157,7 +170,7 @@ export type InterpConfig = {
  *  toggle only when the server has it enabled. Best-effort (never throws in the
  *  caller path — treat a rejection as "disabled"). */
 export async function getInterpConfig(): Promise<InterpConfig> {
-  const res = await fetch(`${API_URL}/api/v1/interp/config`, { cache: "no-store" });
+  const res = await fetch(`${apiUrl()}/api/v1/interp/config`, { cache: "no-store" });
   if (!res.ok) throw new Error(`interp config failed: ${res.status}`);
   return (await res.json()) as InterpConfig;
 }
@@ -195,28 +208,35 @@ export function mapMovie(m: ApiMovie): Movie {
     tag: (m.tag as Tag) ?? null,
     gradient: gradientFor(m.id + m.title),
     status: m.status ?? "ready",
-    manifestUrl: m.manifest_url ?? null,
-    hdrManifestUrl: m.hdr_manifest_url ?? null,
-    dashUrl: m.dash_url ?? null,
+    // Playback + origin-served art are stored absolute against the transcode-time
+    // origin (localhost:8080). rewriteOriginUrl() swaps the host for the runtime
+    // gateway when a ?api= backend is set, and is a no-op locally / for external
+    // (TMDB) art that isn't under /hls/.
+    manifestUrl: rewriteOriginUrl(m.manifest_url ?? null),
+    hdrManifestUrl: rewriteOriginUrl(m.hdr_manifest_url ?? null),
+    dashUrl: rewriteOriginUrl(m.dash_url ?? null),
     // Effective poster shown on cards/hero: a custom upload wins over the
     // auto-extracted frame. posterUrl keeps the raw custom value for the admin.
     // Use `||` (not `??`) so a reset-to-auto empty string falls back correctly.
-    thumbnailUrl: m.poster_url || m.thumbnail_url || null,
-    posterUrl: m.poster_url || null,
-    backdropUrl: m.backdrop_url || m.poster_url || null,
+    thumbnailUrl: rewriteOriginUrl(m.poster_url || m.thumbnail_url || null),
+    posterUrl: rewriteOriginUrl(m.poster_url || null),
+    backdropUrl: rewriteOriginUrl(m.backdrop_url || m.poster_url || null),
     visibility: m.visibility ?? "published",
     progress: m.progress ?? 0,
     stage: m.stage ?? null,
     audioTracks: m.audio_tracks ?? [],
-    subtitleTracks: m.subtitle_tracks ?? [],
+    subtitleTracks: (m.subtitle_tracks ?? []).map((t) => ({
+      ...t,
+      url: rewriteOriginUrl(t.url),
+    })),
     mediaInfo: m.media_info ?? null,
     hasExternalAudio: m.has_external_audio ?? false,
     interpRequested: m.interp_requested ?? false,
     interpTargetFps: m.interp_target_fps ?? null,
     interpStatus: m.interp_status ?? null,
     interpDetail: m.interp_detail ?? null,
-    storyboardUrl: m.storyboard_url ?? null,
-    interpManifestUrl: m.interp_manifest_url ?? null,
+    storyboardUrl: rewriteOriginUrl(m.storyboard_url ?? null),
+    interpManifestUrl: rewriteOriginUrl(m.interp_manifest_url ?? null),
     interpFps: m.interp_fps ?? null,
     interpProgress: m.interp_progress ?? null,
     interpStage: m.interp_stage ?? null,
@@ -226,7 +246,7 @@ export function mapMovie(m: ApiMovie): Movie {
 }
 
 export async function getMovie(id: string): Promise<Movie | null> {
-  const res = await fetch(`${API_URL}/api/v1/movies/${id}`, { cache: "no-store" });
+  const res = await fetch(`${apiUrl()}/api/v1/movies/${id}`, { cache: "no-store" });
   if (!res.ok) return null;
   return mapMovie((await res.json()) as ApiMovie);
 }
@@ -234,7 +254,7 @@ export async function getMovie(id: string): Promise<Movie | null> {
 // ---- API calls ----
 
 export async function listMovies(): Promise<Movie[]> {
-  const res = await fetch(`${API_URL}/api/v1/movies/`, { cache: "no-store" });
+  const res = await fetch(`${apiUrl()}/api/v1/movies/`, { cache: "no-store" });
   if (!res.ok) throw new Error(`listMovies failed: ${res.status}`);
   const data = (await res.json()) as { movies: ApiMovie[] };
   return data.movies.map(mapMovie);
@@ -257,7 +277,7 @@ export function uploadVideo(
   // XHR (not fetch) so we get real upload-progress events.
   return new Promise<UploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/api/v1/upload`);
+    xhr.open("POST", `${apiUrl()}/api/v1/upload`);
     const token = getAdminToken();
     if (token) xhr.setRequestHeader("Authorization", `Basic ${token}`);
     xhr.upload.onprogress = (e) => {
@@ -289,7 +309,7 @@ export async function adminLogin(
   password: string,
 ): Promise<boolean> {
   const token = btoa(`${username}:${password}`);
-  const res = await fetch(`${API_URL}/api/v1/admin/check`, {
+  const res = await fetch(`${apiUrl()}/api/v1/admin/check`, {
     headers: { Authorization: `Basic ${token}` },
   });
   if (res.ok) {
@@ -300,7 +320,7 @@ export async function adminLogin(
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/${jobId}`, {
+  const res = await fetch(`${apiUrl()}/api/v1/jobs/${jobId}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`job status failed: ${res.status}`);
@@ -309,7 +329,7 @@ export async function getJobStatus(jobId: string): Promise<JobStatus> {
 
 /** Ask the worker to abort a still-processing transcode (admin only). */
 export async function cancelJob(jobId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/${jobId}/cancel`, {
+  const res = await fetch(`${apiUrl()}/api/v1/jobs/${jobId}/cancel`, {
     method: "POST",
     headers: { ...authHeader() },
   });
@@ -321,7 +341,7 @@ export async function cancelJob(jobId: string): Promise<void> {
 
 /** Delete an uploaded movie — catalog row + HLS segments + raw source (admin only). */
 export async function deleteMovie(movieId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}`, {
+  const res = await fetch(`${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}`, {
     method: "DELETE",
     headers: { ...authHeader() },
   });
@@ -345,7 +365,7 @@ export type MoviePatch = Partial<{
 
 /** Edit a title's metadata / visibility (admin). Returns the updated movie. */
 export async function updateMovie(movieId: string, patch: MoviePatch): Promise<Movie> {
-  const res = await fetch(`${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}`, {
+  const res = await fetch(`${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...authHeader() },
     body: JSON.stringify(patch),
@@ -364,7 +384,7 @@ export async function uploadArtwork(
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(
-    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/artwork?kind=${kind}`,
+    `${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/artwork?kind=${kind}`,
     { method: "POST", headers: { ...authHeader() }, body: form },
   );
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
@@ -378,7 +398,7 @@ export async function attachAudio(movieId: string, file: File): Promise<void> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(
-    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/audio`,
+    `${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/audio`,
     { method: "POST", headers: { ...authHeader() }, body: form },
   );
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
@@ -390,7 +410,7 @@ export async function attachAudio(movieId: string, file: File): Promise<void> {
 /** Re-run the transcode from the original source (admin). */
 export async function retranscodeMovie(movieId: string): Promise<void> {
   const res = await fetch(
-    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/retranscode`,
+    `${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/retranscode`,
     { method: "POST", headers: { ...authHeader() } },
   );
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
@@ -405,7 +425,7 @@ export async function retranscodeMovie(movieId: string): Promise<void> {
     already high-fps / too tall / too long / HDR. */
 export async function enhanceFps(movieId: string, targetFps: number): Promise<void> {
   const res = await fetch(
-    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate`,
+    `${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader() },
@@ -426,7 +446,7 @@ export async function enhanceFpsCopy(
   height?: number,
 ): Promise<void> {
   const res = await fetch(
-    `${API_URL}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate-copy`,
+    `${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/interpolate-copy`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader() },
@@ -442,7 +462,7 @@ export async function enhanceFpsCopy(
 export async function createMovie(
   payload: MovieCreatePayload,
 ): Promise<Movie> {
-  const res = await fetch(`${API_URL}/api/v1/movies/`, {
+  const res = await fetch(`${apiUrl()}/api/v1/movies/`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeader() },
     body: JSON.stringify(payload),
