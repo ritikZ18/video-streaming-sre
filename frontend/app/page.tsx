@@ -4,33 +4,36 @@ import { useState, useMemo, useEffect } from "react";
 import { Movie } from "../lib/types";
 import { initialMovies } from "../data/movies";
 import { listMovies } from "../lib/api";
+import { fetchTmdbCatalog } from "../lib/tmdb";
+import { dedupeByTitle } from "../lib/catalog";
 import { Navbar } from "../components/layout/Navbar";
 import { Footer } from "../components/layout/Footer";
 import { HeroCarousel } from "../components/movie/HeroCarousel";
 import { ScrollRow } from "../components/movie/ScrollRow";
 import { MovieDetail } from "../components/movie/MovieDetail";
 
-const GENRES = ["Trending", "Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
+const GENRES = ["Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
 
 export default function HomePage() {
-  const [movies, setMovies] = useState<Movie[]>(initialMovies);
+  const [uploads, setUploads] = useState<Movie[]>([]);
+  const [catalog, setCatalog] = useState<Movie[]>(initialMovies);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
 
+  // Playable uploads — poll so processing → ready flips live.
   useEffect(() => {
     let active = true;
     const load = () => {
       listMovies()
         .then((real) => {
-          if (!active) return;
-          const realIds = new Set(real.map((m) => m.id));
-          setMovies([...real, ...initialMovies.filter((s) => !realIds.has(s.id))]);
+          // Public home shows published titles only (draft/unlisted are hidden;
+          // unlisted stays reachable by direct link).
+          if (active) setUploads(real.filter((m) => (m.visibility ?? "published") === "published"));
         })
         .catch(() => {
-          /* Catalog API unreachable — keep the seed catalog. */
+          /* catalog API unreachable — keep what we have */
         });
     };
     load();
-    // Poll so processing → ready flips in the UI without a manual reload.
     const timer = setInterval(load, 5000);
     return () => {
       active = false;
@@ -38,40 +41,62 @@ export default function HomePage() {
     };
   }, []);
 
+  // TMDB catalog (display-only) — fetched once; falls back to the seed list.
+  useEffect(() => {
+    let active = true;
+    fetchTmdbCatalog(500)
+      .then((list) => {
+        if (active && list.length) setCatalog(list);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const playMovie = (movie: Movie) => {
     if (!movie.manifestUrl) return;
-    const q = new URLSearchParams({ url: movie.manifestUrl, title: movie.title, id: movie.id });
-    if (movie.thumbnailUrl) q.set("poster", movie.thumbnailUrl);
-    window.location.href = `/player?${q.toString()}`;
+    // Only the id — the player fetches url/title/poster via getMovie(id), so the
+    // manifest/poster URLs aren't exposed in the address bar.
+    window.location.href = `/player?id=${encodeURIComponent(movie.id)}`;
   };
 
+  const dedupedUploads = useMemo(() => dedupeByTitle(uploads), [uploads]);
+
+  // Uploads (playable) win over catalog entries by id; then collapse duplicate
+  // titles so the same video can't appear across multiple genre rows.
+  const movies = useMemo(() => {
+    const ids = new Set(uploads.map((m) => m.id));
+    return dedupeByTitle([...uploads, ...catalog.filter((m) => !ids.has(m.id))]);
+  }, [uploads, catalog]);
+
   const grouped = useMemo(() => {
-    const result: Record<string, Movie[]> = {};
-    GENRES.forEach((g) => {
-      if (g === "Trending") {
-        result[g] = movies.filter(
-          (m) => m.tag === "Trending" || m.tag === "New Release",
-        );
-      } else {
-        result[g] = movies.filter((m) => m.genre === g);
-      }
-    });
-    return result;
+    const r: Record<string, Movie[]> = {};
+    for (const g of GENRES) r[g] = movies.filter((m) => m.genre === g);
+    return r;
+  }, [movies]);
+
+  const featured = useMemo(() => {
+    const withArt = movies.filter((m) => m.backdropUrl);
+    return (withArt.length ? withArt : movies).slice(0, 6);
   }, [movies]);
 
   return (
-    <div className="min-h-screen bg-black text-white">
+    <div className="min-h-screen text-white">
       <Navbar />
       <main className="relative z-0">
-        <HeroCarousel movies={movies.filter((m) => m.tag === "Trending" || m.tag === "New Release")} onMoreInfo={setSelectedMovie} onPlay={playMovie} />
-        <section className="px-8 pb-16">
-          <ScrollRow
-            title="Trending Now"
-            movies={grouped["Trending"] ?? []}
-            cardSize="large"
-            onMovieClick={setSelectedMovie}
-          />
-          {GENRES.filter((g) => g !== "Trending").map((g) => (
+        <HeroCarousel movies={featured} onMoreInfo={setSelectedMovie} onPlay={playMovie} />
+        <section className="px-8 pb-16 pt-3">
+          {dedupedUploads.length > 0 && (
+            <ScrollRow
+              title="Your Library"
+              movies={dedupedUploads}
+              cardSize="large"
+              onMovieClick={setSelectedMovie}
+              accent
+            />
+          )}
+          {GENRES.map((g) => (
             <ScrollRow
               key={g}
               title={g}

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import structlog
 from app.config import get_settings
-from app.profiles import PROFILES, EncodingProfile
+from app.profiles import PROFILES, EncodingProfile, ladder_for
 
 logger = structlog.get_logger()
 
@@ -83,6 +85,124 @@ def extract_thumbnail(input_path: Path, output_path: Path, at_seconds: float = 3
     return result.returncode == 0 and output_path.exists()
 
 
+def _vtt_timestamp(seconds: float) -> str:
+    """Seconds -> a WebVTT cue timestamp 'HH:MM:SS.mmm'."""
+    ms = int(round(max(0.0, seconds) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+# Storyboard (hover-scrub) sprite geometry.
+_STORYBOARD_TILE_W = 160   # cell width in px; height derived from source aspect
+_STORYBOARD_COLS = 10      # cells per row in the mosaic
+_STORYBOARD_MAX_TILES = 100  # cap the number of thumbnails (one sprite sheet)
+
+
+def generate_storyboard(
+    input_path: Path,
+    out_dir: Path,
+    duration_seconds: float,
+    src_width: int | None,
+    src_height: int | None,
+) -> bool:
+    """Build a hover-scrub storyboard beside the manifest:
+
+    - ``storyboard.jpg`` — a grid mosaic of evenly spaced frames (one sprite sheet).
+    - ``thumbnails.vtt`` — one cue per cell, each pointing at its rectangle via the
+      ``storyboard.jpg#xywh=x,y,w,h`` media fragment, so the player can show the
+      frame under the cursor while scrubbing the seek bar.
+
+    Two cheap ffmpeg passes (extract evenly spaced small frames, then tile them).
+    Best-effort: returns False on any problem so it never breaks a transcode.
+    """
+    if not duration_seconds or duration_seconds <= 0:
+        return False
+    tile_w = _STORYBOARD_TILE_W
+    if src_width and src_height and src_width > 0:
+        tile_h = max(2, (int(round(tile_w * src_height / src_width)) & ~1))  # even
+    else:
+        tile_h = 90  # 16:9 fallback
+    interval = max(1.0, duration_seconds / _STORYBOARD_MAX_TILES)
+    frames_dir = Path(tempfile.mkdtemp(prefix="storyboard-"))
+    try:
+        extract = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path),
+             "-vf", f"fps={1.0 / interval:.6f},scale={tile_w}:{tile_h}",
+             "-q:v", "4", str(frames_dir / "%05d.jpg")],
+            capture_output=True, text=True, check=False,
+        )
+        frames = sorted(frames_dir.glob("*.jpg"))
+        if extract.returncode != 0 or not frames:
+            return False
+        n = len(frames)
+        cols = _STORYBOARD_COLS
+        rows = (n + cols - 1) // cols
+        sprite = out_dir / "storyboard.jpg"
+        tile = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-framerate", "1",
+             "-i", str(frames_dir / "%05d.jpg"),
+             "-vf", f"tile={cols}x{rows}", "-frames:v", "1", "-q:v", "4", str(sprite)],
+            capture_output=True, text=True, check=False,
+        )
+        if tile.returncode != 0 or not sprite.exists():
+            return False
+        lines = ["WEBVTT", ""]
+        for i in range(n):
+            t0 = i * interval
+            t1 = min((i + 1) * interval, duration_seconds)
+            x = (i % cols) * tile_w
+            y = (i // cols) * tile_h
+            lines += [
+                f"{_vtt_timestamp(t0)} --> {_vtt_timestamp(t1)}",
+                f"storyboard.jpg#xywh={x},{y},{tile_w},{tile_h}",
+                "",
+            ]
+        (out_dir / "thumbnails.vtt").write_text("\n".join(lines), encoding="utf-8")
+        return True
+    except Exception as exc:  # noqa: BLE001 - storyboard is best-effort
+        logger.warning("storyboard_failed", error=str(exc)[:200])
+        return False
+    finally:
+        shutil.rmtree(frames_dir, ignore_errors=True)
+
+
+def probe_fps(input_path: Path) -> float:
+    """Average frame rate of the first video stream (0.0 if unknown). Used by the
+    interpolation guardrails (skip a source that is already high-fps)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=avg_frame_rate", "-of", "default=nk=1:nw=1",
+         str(input_path)],
+        capture_output=True, text=True, check=False,
+    )
+    raw = (result.stdout or "").strip()
+    if "/" in raw:
+        num, den = raw.split("/", 1)
+        try:
+            d = float(den)
+            return float(num) / d if d else 0.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _rate_to_fps(rate: str | None) -> float:
+    """Parse an ffprobe frame-rate string ('24000/1001') → 23.976 (0.0 if bad)."""
+    if not rate or "/" not in rate:
+        return 0.0
+    try:
+        num, den = rate.split("/", 1)
+        d = float(den)
+        return round(float(num) / d, 3) if d else 0.0
+    except ValueError:
+        return 0.0
+
+
 def probe_media(input_path: Path) -> dict[str, Any]:
     """Full ffprobe (the 'VLC' metadata): video + audio tracks + subtitle tracks."""
     result = subprocess.run(
@@ -105,6 +225,13 @@ def probe_media(input_path: Path) -> dict[str, Any]:
                 "codec": s.get("codec_name"),
                 "width": s.get("width"),
                 "height": s.get("height"),
+                # Stored as an int — DynamoDB (boto3 resource) rejects Python floats,
+                # and a whole-number fps is all the UI shows. 23.976 -> 24.
+                "fps": round(_rate_to_fps(s.get("avg_frame_rate") or s.get("r_frame_rate"))),
+                # Color signalling — used to detect HDR (PQ/HLG) sources so they
+                # get an HDR-preserving HEVC tier + a tonemapped H.264 fallback.
+                "color_transfer": s.get("color_transfer"),
+                "pix_fmt": s.get("pix_fmt"),
             }
         elif ctype == "audio":
             info["audio"].append({
@@ -130,17 +257,57 @@ def probe_media(input_path: Path) -> dict[str, Any]:
 
 
 def encode_audio(input_path: Path, output_path: Path, stream_index: int) -> Path:
-    """Encode one source audio stream to an AAC MP4 for CMAF packaging."""
+    """Encode one source audio stream to a STEREO AAC MP4 for CMAF packaging.
+
+    ``-ac 2`` downmixes multichannel sources (e.g. Dolby 5.1 = 6 channels) to
+    stereo. Browsers fail to append 6-channel AAC in a demuxed HLS SourceBuffer,
+    so a 5.1 title would refuse to play in any browser; stereo plays everywhere
+    (and web output is stereo anyway)."""
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path),
         "-map", f"0:{stream_index}", "-vn",
-        "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart", str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"audio encode failed: {result.stderr}")
     return output_path
+
+
+def encode_external_audio(
+    input_path: Path, output_path: Path, duration_seconds: float = 0.0
+) -> Path:
+    """Encode an ADMIN-ATTACHED external audio file to stereo AAC for a silent
+    title. When the video duration is known, pad-with-silence (``apad``) and cap
+    (``-t``) so the track lines up exactly with the video — a shorter track gets
+    trailing silence, a longer one is trimmed — keeping the CMAF segments clean.
+    With an unknown duration it takes the audio as-is."""
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(input_path), "-vn"]
+    if duration_seconds and duration_seconds > 0:
+        cmd += ["-af", "apad", "-t", f"{duration_seconds:.3f}"]
+    cmd += [
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"external audio encode failed: {result.stderr}")
+    return output_path
+
+
+def reassemble_rendition(playlist_path: Path, output_path: Path) -> bool:
+    """Stream-copy an HLS media playlist's fMP4 segments back into a single MP4
+    (``-c copy``, no re-encode). Used to rebuild a rendition for the audio-remux
+    fast path on titles encoded before renditions were persisted — so remux never
+    has to re-transcode the video."""
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-allowed_extensions", "ALL",
+         "-i", str(playlist_path), "-c", "copy", "-movflags", "+faststart",
+         str(output_path)],
+        capture_output=True, text=True, check=False,
+    )
+    return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
 
 
 def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: int) -> bool:
@@ -313,77 +480,273 @@ def encode_rendition(
     return output_path
 
 
+# --- Encode quality ---------------------------------------------------------
+# Fixed bitrate spends the same bits on a static shot and a busy action scene;
+# constant-quality (CQ) VBR targets a visual QUALITY instead, so complex frames
+# get more bits automatically. A per-profile -maxrate cap keeps peak bitrate
+# streamable. Flag sets validated on this GTX 1650: H.264 8-bit takes the full
+# NVENC tuning; HEVC Main10 is kept conservative (spatial-aq / rc-lookahead can
+# report "No capable devices" for 10-bit on this Turing card).
+NVENC_CQ_H264 = "20"
+NVENC_CQ_HEVC = "23"  # HEVC is more efficient — a higher CQ ~ H.264's quality
+_NVENC_CORE = ["-rc", "vbr", "-b:v", "0", "-preset", "p7", "-tune", "hq"]
+_NVENC_H264_EXTRA = [
+    "-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8",
+    "-rc-lookahead", "20", "-b_ref_mode", "middle", "-multipass", "fullres",
+]
+_NVENC_HEVC_EXTRA = ["-multipass", "fullres"]
+
+# HDR (BT.2020 / PQ) signalling kept on the HEVC tier so the picture stays HDR.
+_HDR_TAGS = ["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"]
+# HDR->SDR tone-map (Hable), applied ONCE before the split, then scaled per rung.
+_TONEMAP = (
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
+)
+
+# Source color transfers that mean HDR (PQ / HLG).
+_HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+
+
+def is_hdr(media: dict[str, Any]) -> bool:
+    """True if the source signals HDR (PQ/HLG). HDR gets an HDR-preserving HEVC
+    tier plus a tonemapped H.264 fallback; SDR gets a single H.264 ladder."""
+    ct = ((media.get("video") or {}).get("color_transfer") or "").lower()
+    return ct in _HDR_TRANSFERS
+
+
+def can_nvdec_decode(media: dict[str, Any]) -> bool:
+    """True if this GPU's NVDEC can decode the source, so the full-GPU path is
+    worth trying. AV1 has no NVDEC on Turing (GTX 1650), and NVDEC H.264 is 8-bit
+    only — for those we skip straight to the CPU-decode + NVENC hybrid instead of
+    burning ~a minute on two doomed full-GPU attempts per job."""
+    v = media.get("video") or {}
+    codec = (v.get("codec") or "").lower()
+    pix = (v.get("pix_fmt") or "").lower()
+    if codec == "av1":
+        return False
+    if codec == "h264" and "10" in pix:  # High 10 / 10-bit H.264
+        return False
+    return True
+
+
 def build_ladder_command(
     input_path: Path,
     outputs: list[tuple[EncodingProfile, Path]],
-    use_nvenc: bool,
+    *,
+    codec: str,          # "h264" | "hevc"
+    use_nvenc: bool,     # NVENC vs libx264/libx265
+    gpu_decode: bool,    # NVDEC + scale_cuda (only valid for SDR sources)
+    mode: str,           # "sdr" | "hdr_preserve" | "hdr_tonemap"
 ) -> list[str]:
-    """Single-pass command: decode the source ONCE and emit every rendition.
+    """One single-pass ladder command for ONE codec: decode the source ONCE,
+    split, scale per rung, encode each rung with CQ-VBR (+ a -maxrate cap).
 
-    GPU path (use_nvenc): NVDEC decode -> keep frames on the GPU
-    (-hwaccel_output_format cuda) -> split -> scale_cuda per rendition (resize +
-    10-bit->8-bit on the GPU) -> one h264_nvenc encoder per rendition. No CPU
-    scale, and the expensive decode happens once instead of once-per-rendition.
-
-    CPU fallback: decode once -> split -> libswscale scale per rendition -> libx264.
+    mode:
+      - ``sdr``          -> 8-bit yuv420p, bt709.
+      - ``hdr_preserve`` -> 10-bit p010, BT.2020/PQ kept (the HEVC tier).
+      - ``hdr_tonemap``  -> HDR->SDR (Hable) once, then 8-bit (the H.264 fallback).
+    ``gpu_decode`` uses NVDEC + ``scale_cuda`` (only for SDR sources the GPU can
+    decode); otherwise CPU decode + libswscale lanczos. GPU lanczos isn't in this
+    ffmpeg build, so lanczos is applied on the CPU-scale path only.
     """
     settings = get_settings()
     n = len(outputs)
+    hw_decode = use_nvenc and gpu_decode and mode == "sdr"
+    pix = "p010le" if mode == "hdr_preserve" else "yuv420p"
+
     cmd: list[str] = ["ffmpeg", "-y", "-progress", "pipe:1", "-nostats", "-loglevel", "error"]
-    if use_nvenc:
+    if hw_decode:
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
     cmd += ["-i", str(input_path)]
 
-    split = f"[0:v]split={n}" + "".join(f"[s{i}]" for i in range(n))
+    # (optional one-time HDR->SDR tonemap) -> split -> per-rung scale
+    head = f"[0:v]{_TONEMAP}[tm];[tm]" if mode == "hdr_tonemap" else "[0:v]"
+    split = f"{head}split={n}" + "".join(f"[s{i}]" for i in range(n))
+    # Aspect-preserving downscale (fit inside the rung box, even dimensions, never
+    # upscale) so non-16:9 sources keep their shape and full width instead of being
+    # stretched into the profile's exact WxH.
+    fit = "force_original_aspect_ratio=decrease:force_divisible_by=2"
     chains: list[str] = []
     for i, (prof, _) in enumerate(outputs):
-        if use_nvenc:
-            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:format=yuv420p[v{i}]")
+        if hw_decode:
+            chains.append(f"[s{i}]scale_cuda={prof.width}:{prof.height}:{fit}:format={pix}[v{i}]")
         else:
-            chains.append(f"[s{i}]scale={prof.width}:{prof.height},format=yuv420p[v{i}]")
+            chains.append(f"[s{i}]scale={prof.width}:{prof.height}:{fit}:flags=lanczos,format={pix}[v{i}]")
     cmd += ["-filter_complex", ";".join([split] + chains)]
 
     for i, (prof, outp) in enumerate(outputs):
         cmd += ["-map", f"[v{i}]"]
-        if use_nvenc:
-            cmd += ["-c:v", "h264_nvenc", "-preset", settings.nvenc_preset]
-        else:
-            cmd += ["-c:v", "libx264", "-preset", settings.x264_preset, "-profile:v", prof.profile]
+        if use_nvenc and codec == "hevc":
+            cmd += ["-c:v", "hevc_nvenc", "-tag:v", "hvc1"]
+            if mode == "hdr_preserve":
+                cmd += ["-profile:v", "main10"]
+            cmd += ["-cq", NVENC_CQ_HEVC, *_NVENC_CORE, *_NVENC_HEVC_EXTRA]
+        elif use_nvenc:  # h264_nvenc
+            cmd += ["-c:v", "h264_nvenc", "-cq", NVENC_CQ_H264, *_NVENC_CORE, *_NVENC_H264_EXTRA]
+        elif codec == "hevc":
+            cmd += ["-c:v", "libx265", "-preset", settings.x264_preset, "-crf", "24", "-tag:v", "hvc1"]
+        else:  # libx264 CPU last resort
+            cmd += ["-c:v", "libx264", "-preset", settings.x264_preset, "-crf", "20", "-profile:v", prof.profile]
+        # Cap the peak so CQ output stays streamable + align keyframes to segments.
         cmd += [
-            "-b:v", prof.video_bitrate, "-maxrate", prof.maxrate, "-bufsize", prof.bufsize,
+            "-maxrate", prof.maxrate, "-bufsize", prof.bufsize,
             "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_DURATION})", "-sc_threshold", "0",
-            "-an", "-movflags", "+faststart", str(outp),
         ]
+        if mode == "hdr_preserve":
+            cmd += _HDR_TAGS
+        cmd += ["-an", "-movflags", "+faststart", str(outp)]
     return cmd
+
+
+def _encode_one_ladder(
+    input_path: Path,
+    outputs: list[tuple[EncodingProfile, Path]],
+    codec: str,
+    mode: str,
+    total_seconds: float,
+    on_progress: ProgressCb | None,
+    should_cancel: CancelCb | None,
+    gpu_decodable: bool = True,
+) -> list[Path]:
+    """Encode ONE codec's ladder with the full-GPU -> hybrid -> CPU fallback.
+
+    SDR with an NVDEC-decodable source tries full-GPU (NVDEC+NVENC, retried once
+    for cold NVENC), then hybrid (CPU decode + NVENC), then CPU. Sources this GPU
+    can't NVDEC-decode (AV1, 10-bit H.264) or any HDR mode skip full-GPU and start
+    at the hybrid, so we don't burn time on attempts that always fail.
+    """
+    settings = get_settings()
+
+    def run(use_nvenc: bool, gpu_decode: bool) -> None:
+        _run_ffmpeg_progress(
+            build_ladder_command(
+                input_path, outputs, codec=codec, use_nvenc=use_nvenc,
+                gpu_decode=gpu_decode, mode=mode,
+            ),
+            total_seconds, on_progress, should_cancel,
+        )
+
+    if settings.use_nvenc:
+        if mode == "sdr" and gpu_decodable:
+            for attempt in range(2):  # full GPU, retry once for cold-start NVENC
+                try:
+                    run(use_nvenc=True, gpu_decode=True)
+                    return [o for _, o in outputs]
+                except RuntimeError as exc:
+                    logger.warning("gpu_ladder_failed", codec=codec, attempt=attempt, error=str(exc)[:200])
+                    if attempt == 0:
+                        time.sleep(2.0)
+        try:  # hybrid: CPU decode + NVENC encode
+            logger.warning("hybrid_cpu_decode_gpu_encode", codec=codec, mode=mode)
+            run(use_nvenc=True, gpu_decode=False)
+            return [o for _, o in outputs]
+        except RuntimeError as exc:
+            logger.warning("hybrid_ladder_failed", codec=codec, error=str(exc)[:200])
+
+    logger.warning("ladder_using_cpu_fallback", codec=codec, mode=mode)
+    run(use_nvenc=False, gpu_decode=False)
+    return [o for _, o in outputs]
 
 
 def encode_ladder(
     input_path: Path,
     renditions_dir: Path,
     total_seconds: float,
+    source_height: int = 0,
+    hdr: bool = False,
+    gpu_decodable: bool = True,
     on_progress: ProgressCb | None = None,
     should_cancel: CancelCb | None = None,
-) -> list[Path]:
-    """Encode ALL renditions in a single decode pass; return output paths in
-    PROFILES order. Tries the GPU ladder first (when NVENC is on) and falls back
-    to a single-pass CPU ladder if the GPU path fails."""
-    settings = get_settings()
-    outputs = [(p, renditions_dir / f"v_{p.name}.mp4") for p in PROFILES]
-    if settings.use_nvenc:
-        try:
-            _run_ffmpeg_progress(
-                build_ladder_command(input_path, outputs, use_nvenc=True),
-                total_seconds, on_progress, should_cancel,
-            )
-            return [outp for _, outp in outputs]
-        except RuntimeError as exc:
-            logger.warning("nvenc_ladder_failed_falling_back_to_cpu", error=str(exc)[:300])
+) -> list[tuple[str, list[Path]]]:
+    """Encode the rendition ladder(s); return ``[(codec, [rung paths]), ...]``.
 
-    _run_ffmpeg_progress(
-        build_ladder_command(input_path, outputs, use_nvenc=False),
-        total_seconds, on_progress, should_cancel,
+    - **SDR source** -> one H.264 ladder (universal), quality-upgraded.
+    - **HDR source** -> an HEVC-Main10 ladder that KEEPS the HDR **plus** a
+      tonemapped H.264 SDR ladder. Both are packaged into one master so HDR-capable
+      players use HEVC and everything else falls back to H.264.
+
+    The ladder is chosen by ladder_for(source_height) so a 4K source produces up
+    to 2160p and smaller sources are never upscaled.
+    """
+    profiles = ladder_for(source_height)
+
+    def outs(codec: str) -> list[tuple[EncodingProfile, Path]]:
+        return [(p, renditions_dir / f"v_{codec}_{p.name}.mp4") for p in profiles]
+
+    if not hdr:
+        paths = _encode_one_ladder(
+            input_path, outs("h264"), "h264", "sdr",
+            total_seconds, on_progress, should_cancel,
+            gpu_decodable=gpu_decodable,
+        )
+        return [("h264", paths)]
+
+    # HDR: split the progress budget across the two ladders so the bar climbs 0->100.
+    def scaled(lo: int, hi: int) -> ProgressCb | None:
+        if on_progress is None:
+            return None
+        return lambda p: on_progress(int(lo + (hi - lo) * p / 100))
+
+    # Encode + list H.264-SDR FIRST (universal, always plays) then the
+    # HDR-preserving HEVC tier. H.264 first makes it the default variant, so a
+    # browser that can't decode HEVC never gets stuck on the HEVC ladder.
+    h264_paths = _encode_one_ladder(
+        input_path, outs("h264"), "h264", "hdr_tonemap",
+        total_seconds, scaled(0, 50), should_cancel,
     )
-    return [outp for _, outp in outputs]
+    hevc_paths = _encode_one_ladder(
+        input_path, outs("hevc"), "hevc", "hdr_preserve",
+        total_seconds, scaled(50, 100), should_cancel,
+    )
+    return [("h264", h264_paths), ("hevc", hevc_paths)]
+
+
+# Precise HEVC Main10 RFC 6381 codec string (level 5.1 covers up to 1440p60). The
+# profile digit (2 = Main10) is what browsers gate on when deciding decode support.
+HEVC_CODEC = "hvc1.2.4.L153.B0"
+
+
+def _split_masters(master_path: Path) -> Path | None:
+    """Split ffmpeg's combined dual-codec master into two single-codec masters:
+
+    - ``master.m3u8``      — H.264 variants only. The universal default the player
+      loads first; it plays in every browser.
+    - ``master_hevc.m3u8`` — HEVC variants only, with a precise Main10 codec string.
+      The HDR tier; the player switches to it only when the browser can actually
+      decode HEVC (checked via mediaCapabilities). Written only if HEVC variants
+      exist (SDR videos get no HEVC master).
+
+    Serving one MIXED master breaks Chrome (it claims bare-hvc1 support, then fails
+    to decode 10-bit HDR HEVC and never falls back) — hence two separate masters.
+    Returns the HEVC master path, or None for SDR.
+    """
+    header: list[str] = []
+    h264: list[str] = []
+    hevc: list[str] = []
+    lines = master_path.read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("#EXT-X-STREAM-INF"):
+            uri = lines[i + 1] if i + 1 < len(lines) else ""
+            if "hvc1" in ln:
+                ln = ln.replace('CODECS="hvc1,', f'CODECS="{HEVC_CODEC},')
+                ln = ln.replace('CODECS="hvc1"', f'CODECS="{HEVC_CODEC}"')
+                hevc += [ln, uri]
+            else:
+                h264 += [ln, uri]
+            i += 2
+        else:
+            if ln.strip():  # keep header lines (#EXTM3U, VERSION, audio EXT-X-MEDIA)
+                header.append(ln)
+            i += 1
+    if not hevc:
+        return None  # SDR — master.m3u8 already H.264-only
+    master_path.write_text("\n".join(header + h264) + "\n", encoding="utf-8")
+    hevc_path = master_path.with_name("master_hevc.m3u8")
+    hevc_path.write_text("\n".join(header + hevc) + "\n", encoding="utf-8")
+    return hevc_path
 
 
 def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> None:
@@ -405,23 +768,30 @@ def _label_hls_audio(master_path: Path, audio_tracks: list[dict[str, Any]]) -> N
 
 
 def package_cmaf(
-    video_paths: list[Path],
+    video_sets: list[tuple[str, list[Path]]],
     audio_tracks: list[dict[str, Any]],
     work_dir: Path,
 ) -> dict[str, Path]:
-    """Stream-copy the video renditions + per-language audio MP4s into ONE CMAF
-    set: master.m3u8 + manifest.mpd. No re-encode (``-c copy``), so it's fast.
+    """Stream-copy the video renditions (one or two codecs) + per-language audio
+    into ONE CMAF set: master.m3u8 + manifest.mpd. No re-encode (``-c copy``).
 
-    ``audio_tracks`` is a list of {"path", "language", "label"} — each becomes a
-    selectable audio rendition / DASH adaptation set.
+    ``video_sets`` is ``[(codec, [rung mp4s]), ...]`` — HDR has two sets (HEVC +
+    H.264). Each codec gets its OWN DASH adaptation set (a set must be single-codec
+    /switchable); in the HLS master they show as variants and the player picks the
+    best codec it can decode (HEVC-HDR, else H.264-SDR).
+    ``audio_tracks`` is a list of {"path", "language", "label"}.
     """
+    # Flatten to (codec, path) in a stable order, tracking which stream indices
+    # belong to each codec for the adaptation-set grouping.
+    videos: list[tuple[str, Path]] = [(codec, p) for codec, paths in video_sets for p in paths]
+
     cmd: list[str] = ["ffmpeg", "-y", "-loglevel", "error"]
-    for p in video_paths:
+    for _, p in videos:
         cmd += ["-i", str(p)]
     for a in audio_tracks:
         cmd += ["-i", str(a["path"])]
 
-    n_v = len(video_paths)
+    n_v = len(videos)
     for i in range(n_v):
         cmd += ["-map", f"{i}:v:0"]
     for j in range(len(audio_tracks)):
@@ -431,11 +801,23 @@ def package_cmaf(
     for j, a in enumerate(audio_tracks):
         cmd += [f"-metadata:s:a:{j}", f"language={a['language']}"]
 
-    # All video in adaptation set 0; each audio in its own set (per language).
-    video_streams = ",".join(str(i) for i in range(n_v))
-    sets = [f"id=0,streams={video_streams}"]
+    # One video adaptation set PER codec, then one per audio language.
+    groups: dict[str, list[int]] = {}
+    order: list[str] = []
+    for i, (codec, _) in enumerate(videos):
+        if codec not in groups:
+            groups[codec] = []
+            order.append(codec)
+        groups[codec].append(i)
+
+    sets: list[str] = []
+    sid = 0
+    for codec in order:
+        sets.append(f"id={sid},streams={','.join(str(i) for i in groups[codec])}")
+        sid += 1
     for j in range(len(audio_tracks)):
-        sets.append(f"id={j + 1},streams={n_v + j}")
+        sets.append(f"id={sid},streams={n_v + j}")
+        sid += 1
 
     cmd += [
         "-f", "dash", "-seg_duration", str(SEGMENT_DURATION),
@@ -457,4 +839,7 @@ def package_cmaf(
         )
     if audio_tracks:
         _label_hls_audio(hls_master, audio_tracks)
-    return {"hls": hls_master, "dash": dash_manifest}
+    # Split the combined master into an H.264 default + a separate HEVC (HDR)
+    # master. hls_hevc is None for SDR videos (no HEVC variants).
+    hls_hevc = _split_masters(hls_master)
+    return {"hls": hls_master, "hls_hevc": hls_hevc, "dash": dash_manifest}

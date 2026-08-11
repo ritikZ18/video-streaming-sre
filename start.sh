@@ -4,8 +4,15 @@
 #   floci (local AWS emulator)  ->  Terraform infra  ->  Docker Compose services
 #
 # Usage:
-#   ./start.sh            # start floci + infra + services
-#   ./start.sh --seed     # also push a generated demo video through the pipeline
+#   ./start.sh                  # start floci + infra + services
+#   ./start.sh --seed           # also push a generated demo video through the pipeline
+#   ./start.sh --queue-clear     # purge ORPHAN transcode jobs (no catalog row) that
+#                                # grind in the background without showing on the UI
+#   ./start.sh --queue-clear all # purge EVERY queued job (nuclear; re-run start.sh
+#                                # afterwards and the reconciler re-queues live rows)
+#   ./start.sh --tunnel          # publish the backend via a Cloudflare quick tunnel,
+#                                # verify it serves, and print the ?api= viewer link
+#                                # (set VIEWER_URL to your Render frontend URL)
 #
 # Override the floci control script location if yours lives elsewhere:
 #   FLOCI=/path/to/floci.sh ./start.sh
@@ -23,6 +30,118 @@ log() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 floci_up() {
   curl -fsS "$FLOCI_HEALTH" >/dev/null 2>&1
 }
+
+# 0) Queue maintenance -------------------------------------------------------
+# The durable job queue (DynamoDB) can hold "orphan" jobs whose catalog row was
+# deleted mid-flight — they keep transcoding in the background but never show on
+# the frontend (there's no row to render). This purges them without a full
+# bring-up. Pass "all" to remove EVERY queued job. Requires the stack to be up.
+if [ "${1:-}" = "--queue-clear" ]; then
+  mode="${2:-orphans}"
+  log "Clearing transcode queue (mode: ${mode})"
+  if ! docker compose ps --status running transcode-worker >/dev/null 2>&1; then
+    echo "ERROR: transcode-worker is not running. Start the stack first (./start.sh)." >&2
+    exit 1
+  fi
+  docker compose exec -T transcode-worker python - "$mode" <<'PY'
+import sys
+from app import jobqueue, catalog
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "orphans"
+qt, ct = jobqueue._table(), catalog._table()
+items = qt.scan().get("Items", [])
+print(f"queue depth: {len(items)}")
+removed = kept = 0
+for it in items:
+    jid = it.get("job_id")
+    try:
+        row = ct.get_item(Key={"id": jid}).get("Item")
+    except Exception:
+        row = None
+    title = (row or {}).get("title", "<no catalog row>")
+    status = (row or {}).get("status", "-")
+    if mode == "all" or row is None:
+        qt.delete_item(Key={"job_id": jid})
+        removed += 1
+        print(f"  removed  {jid}  [{status}] {title}")
+    else:
+        kept += 1
+        print(f"  kept     {jid}  [{status}] {title}  (live row; pass 'all' to force)")
+print(f"done: removed {removed}, kept {kept}, depth now {qt.scan(Select='COUNT').get('Count', 0)}")
+PY
+  log "Queue clear complete."
+  exit 0
+fi
+
+# 0b) Publish the backend through a Cloudflare quick tunnel ------------------
+# Builds/starts the gateway + cloudflared, then VERIFIES the tunnel actually
+# serves a request before printing the link. Never trust cloudflared's log line:
+# it announces the hostname ONCE at registration, and that line outlives a dead
+# tunnel (Cloudflare reaps idle quick tunnels after a few hours).
+if [ "${1:-}" = "--tunnel" ]; then
+  # Your public viewer URL on Render. Set VIEWER_URL in the env or .env.
+  VIEWER_URL="${VIEWER_URL:-$(grep -E '^VIEWER_URL=' .env 2>/dev/null | cut -d= -f2- | tr -d '\r')}"
+  VIEWER_URL="${VIEWER_URL:-https://your-viewer.onrender.com}"
+
+  log "Starting the public gateway + Cloudflare quick tunnel"
+  docker compose --profile tunnel up -d --build gateway cloudflared
+
+  hostname_from_log() {
+    docker compose logs --no-log-prefix cloudflared 2>/dev/null \
+      | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1
+  }
+  tunnel_serves() {  # a request served is what promotes a hostname — not a log line
+    for _ in $(seq 1 15); do
+      curl -fsS -m 5 -o /dev/null "$1/healthz" && return 0
+      sleep 2
+    done
+    return 1
+  }
+
+  log "Waiting for the tunnel to register a hostname"
+  url=""
+  for _ in $(seq 1 20); do
+    url="$(hostname_from_log)"; [ -n "$url" ] && break; sleep 1
+  done
+  if [ -z "$url" ]; then
+    echo "ERROR: cloudflared reported no hostname. See: docker compose logs cloudflared" >&2
+    exit 1
+  fi
+
+  log "Verifying the tunnel actually serves $url/healthz"
+  if ! tunnel_serves "$url"; then
+    log "Not answering — force-recreating cloudflared and retrying"
+    docker compose --profile tunnel up -d --force-recreate cloudflared
+    sleep 3
+    url="$(hostname_from_log)"
+    if [ -z "$url" ] || ! tunnel_serves "$url"; then
+      echo "ERROR: tunnel not serving $url/healthz. See: docker compose logs cloudflared" >&2
+      exit 1
+    fi
+  fi
+
+  # Confirm the public surface is locked down by asking the RUNNING backend, not
+  # the env: an anonymous write must be refused (403) through the tunnel. Probe a
+  # real write path, never /healthz (which is open by design).
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "$url/api/v1/upload" 2>/dev/null || echo 000)"
+
+  printf '\n┌─ tunnel ─────────────────────────────────────────────\n\n'
+  printf '   backend   %s\n'          "$url"
+  printf '   health    %s/healthz\n\n' "$url"
+  printf '  Send this to viewers (once per device):\n'
+  printf '   link      %s/?api=%s\n\n' "$VIEWER_URL" "$url"
+  if [ "$code" = "403" ]; then
+    printf '  Locked down — the gateway refused an anonymous upload (403).\n'
+    printf '  Only catalog reads, video and QoE cross the tunnel; admin stays local.\n'
+  else
+    printf '  WARNING: anonymous POST /api/v1/upload returned %s, not 403.\n' "$code"
+    printf '  The public surface may not be locked down — check the gateway.\n'
+  fi
+  printf '\n  Quick tunnels are ephemeral: the hostname changes on restart and\n'
+  printf '  idle ones are reaped after a few hours. Re-run --tunnel to re-publish.\n'
+  printf '└──────────────────────────────────────────────────────\n\n'
+  exit 0
+fi
 
 # 1) Environment file --------------------------------------------------------
 if [ ! -f .env ]; then

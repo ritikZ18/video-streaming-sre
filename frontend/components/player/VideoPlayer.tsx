@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Hls from "hls.js";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -16,9 +16,14 @@ import {
   Gauge,
   Languages,
   Captions,
+  Rewind,
+  FastForward,
+  Sparkles,
+  ListChecks,
+  Check,
 } from "lucide-react";
 import { sendBeacon, type BeaconEvent } from "../../lib/api";
-import type { SubtitleTrack } from "../../lib/types";
+import type { MediaInfo, SubtitleTrack } from "../../lib/types";
 
 type VideoPlayerProps = {
   src: string | null;
@@ -26,11 +31,66 @@ type VideoPlayerProps = {
   title?: string | null;
   contentId?: string | null;
   subtitleTracks?: SubtitleTrack[];
+  /** WebVTT storyboard (hover-scrub sprite map) served beside the manifest. */
+  storyboardUrl?: string | null;
+  /** Optional smoothed (interpolated) rendition for the "Smooth" toggle. */
+  interpSrc?: string | null;
+  /** Target fps of the smoothed rendition (labels the toggle). */
+  interpFps?: number | null;
+  /** Full source track list (VLC-style) for the Tracks panel. */
+  mediaInfo?: MediaInfo | null;
 };
 
 type Level = { index: number; height: number };
 type AudioOpt = { index: number; label: string };
 type Menu = null | "quality" | "audio" | "captions" | "speed";
+
+// One storyboard cell: a time range + its rectangle in the sprite sheet.
+type StoryCue = { start: number; end: number; x: number; y: number; w: number; h: number };
+type Storyboard = { sprite: string; cues: StoryCue[] };
+
+/** Parse a WebVTT storyboard (cues of `sprite.jpg#xywh=x,y,w,h`) into cells,
+ *  resolving the sprite URL relative to the VTT. Returns null if it has no cues. */
+function parseStoryboard(text: string, vttUrl: string): Storyboard | null {
+  const lines = text.split(/\r?\n/);
+  const cues: StoryCue[] = [];
+  let sprite = "";
+  const ts = (s: string): number =>
+    s.trim().split(":").reduce((acc, part) => acc * 60 + parseFloat(part), 0);
+  for (let i = 0; i < lines.length; i += 1) {
+    const arrow = lines[i].indexOf("-->");
+    if (arrow === -1) continue;
+    const start = ts(lines[i].slice(0, arrow));
+    const end = ts(lines[i].slice(arrow + 3));
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j += 1;
+    const ref = (lines[j] ?? "").trim();
+    const hash = ref.indexOf("#");
+    const m = hash === -1 ? null : ref.slice(hash + 1).match(/xywh=(\d+),(\d+),(\d+),(\d+)/);
+    if (!m) continue;
+    if (!sprite) {
+      const file = ref.slice(0, hash);
+      try {
+        sprite = new URL(file, vttUrl).href;
+      } catch {
+        sprite = file;
+      }
+    }
+    cues.push({ start, end, x: +m[1], y: +m[2], w: +m[3], h: +m[4] });
+    i = j;
+  }
+  return cues.length ? { sprite, cues } : null;
+}
+
+/** Channel count → a friendly label (2 → "stereo", 6 → "5.1"). */
+function channelsLabel(n?: number | null): string {
+  if (!n || n <= 0) return "";
+  if (n === 1) return "mono";
+  if (n === 2) return "stereo";
+  if (n === 6) return "5.1";
+  if (n === 8) return "7.1";
+  return `${n}ch`;
+}
 
 function fmt(t: number): string {
   if (!Number.isFinite(t) || t < 0) return "0:00";
@@ -48,12 +108,22 @@ const menuAnim = {
   transition: { duration: 0.14 },
 };
 
+// Cinematic trailers bake a ~2.39:1 letterbox INTO the 16:9 frame, so object-fit
+// can't remove those bars (the frame IS 16:9). IMAX/fill zooms the picture until the
+// baked bars are cropped off-screen — 1080/800 ≈ 1.35 fills a standard 2.39:1 image.
+// Trades a little left/right crop for an edge-to-edge screen, exactly like VLC's fill.
+const IMAX_ZOOM = 1.35;
+
 export function VideoPlayer({
   src,
   poster,
   title,
   contentId,
   subtitleTracks = [],
+  storyboardUrl,
+  interpSrc,
+  interpFps,
+  mediaInfo,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -67,9 +137,14 @@ export function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [loading, setLoading] = useState(false); // buffering / stalled only -> spinner
+  const [showSpinner, setShowSpinner] = useState(false); // loading, debounced ~250ms
   const [error, setError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [menu, setMenu] = useState<Menu>(null);
+  // Transient center HUD for keyboard actions (volume / seek / mute).
+  const [flash, setFlash] = useState<{ id: number; icon: ReactNode; label: string } | null>(null);
+  const flashId = useRef(0);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [levels, setLevels] = useState<Level[]>([]);
   const [currentLevel, setCurrentLevel] = useState(-1);
@@ -79,9 +154,21 @@ export function VideoPlayer({
   const [rate, setRate] = useState(1);
 
   const [showStats, setShowStats] = useState(false);
+  const [showTracks, setShowTracks] = useState(false);
   const [bitrateKbps, setBitrateKbps] = useState(0);
   const [rebuffers, setRebuffers] = useState(0);
   const [startupMs, setStartupMs] = useState<number | null>(null);
+  const [playingHeight, setPlayingHeight] = useState(0); // actual rendition height, even in auto
+  const [imax, setImax] = useState(false); // fill-screen (object-cover) mode
+  const [imaxZoom, setImaxZoom] = useState(IMAX_ZOOM); // measured per-video + per-screen
+  const [fps, setFps] = useState(0); // real presented frames/sec during playback
+  const [droppedFrames, setDroppedFrames] = useState(0); // frames the decoder couldn't show in time
+
+  // Smooth (interpolated) rendition toggle + hover-scrub storyboard.
+  const [useInterp, setUseInterp] = useState(false);
+  const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
+  const [scrub, setScrub] = useState<{ x: number; cw: number; time: number } | null>(null);
+  const resumeRef = useRef<{ t: number; play: boolean } | null>(null);
 
   const sessionRef = useRef("");
   const eventsRef = useRef<BeaconEvent[]>([]);
@@ -103,10 +190,15 @@ export function VideoPlayer({
     });
   }, [contentId]);
 
+  // The manifest currently loaded: the smoothed rendition when the Smooth toggle
+  // is on and available, else the original. Effects key off this so a toggle
+  // reloads the player onto the other ladder.
+  const activeSrc = useInterp && interpSrc ? interpSrc : src;
+
   // ---- HLS ----
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !src) return;
+    if (!video || !activeSrc) return;
 
     sessionRef.current =
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -123,11 +215,11 @@ export function VideoPlayer({
 
     let hls: Hls | null = null;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
+      video.src = activeSrc;
     } else if (Hls.isSupported()) {
       hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 60 });
       hlsRef.current = hls;
-      hls.loadSource(src);
+      hls.loadSource(activeSrc);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setLevels(hls!.levels.map((l, i) => ({ index: i, height: l.height })));
@@ -155,6 +247,7 @@ export function VideoPlayer({
         const lvl = hls!.levels[data.level];
         if (lvl) {
           setBitrateKbps(Math.round((lvl.bitrate || 0) / 1000));
+          setPlayingHeight(lvl.height || 0);
           setCurrentLevel(hls!.autoLevelEnabled ? -1 : data.level);
           pushEvent({ event: "bitrate_switch", current_bitrate_kbps: Math.round((lvl.bitrate || 0) / 1000) });
         }
@@ -173,7 +266,7 @@ export function VideoPlayer({
       if (hls) hls.destroy();
       hlsRef.current = null;
     };
-  }, [src, flush, pushEvent]);
+  }, [activeSrc, flush, pushEvent]);
 
   // ---- <video> events ----
   useEffect(() => {
@@ -188,11 +281,34 @@ export function VideoPlayer({
       // sync with reality even if the discrete play/playing events were missed
       // (that is what left the ▶ overlay up while the video was actually playing).
       setPlaying(!video.paused);
-      if (!video.paused && video.currentTime > 0) setLoading(false);
+      if (!video.paused && video.currentTime > 0) {
+        setLoading(false);
+        // Fallback startup metric if the 'playing' event was missed.
+        if (!gotFirstRef.current) {
+          gotFirstRef.current = true;
+          const ms = Math.round(performance.now() - loadStartRef.current);
+          setStartupMs(ms);
+          pushEvent({ event: "startup", startup_ms: ms });
+        }
+      }
     };
     // Only trust a finite duration (a live/unfinalized HLS reports Infinity).
     const onMeta = () => {
       if (Number.isFinite(video.duration)) setDuration(video.duration);
+      // Restore position/playback after a Smooth-toggle reload so the swap is
+      // seamless (the new manifest otherwise starts at 0, paused).
+      const r = resumeRef.current;
+      if (r) {
+        resumeRef.current = null;
+        if (r.t > 0) {
+          try {
+            video.currentTime = r.t;
+          } catch {
+            /* seek can throw before the buffer exists — ignore */
+          }
+        }
+        if (r.play) void video.play();
+      }
     };
     const onCanPlay = () => setLoading(false);
     // 'waiting'/'stalled' are the ONLY things that raise the spinner.
@@ -251,8 +367,120 @@ export function VideoPlayer({
       setCurrent(v.currentTime);
       if (Number.isFinite(v.duration) && v.duration > 0) setDuration(v.duration);
       if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
+      // Ground truth for the on-screen resolution: the <video> element's own
+      // decoded frame height. This is what makes "Auto · 1080p" reliable even
+      // when hls.js LEVEL_SWITCHED is missed or currentLevel/loadLevel read -1.
+      if (v.videoHeight) setPlayingHeight(v.videoHeight);
+      // Bitrate still comes from hls.js (the element can't report it).
+      const hls = hlsRef.current;
+      if (hls) {
+        const idx = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
+        const lvl = hls.levels?.[idx];
+        if (lvl) {
+          if (!v.videoHeight && lvl.height) setPlayingHeight(lvl.height);
+          if (lvl.bitrate) setBitrateKbps(Math.round(lvl.bitrate / 1000));
+        }
+      }
     }, 250);
     return () => clearInterval(id);
+  }, [activeSrc]);
+
+  // ---- Live playback FPS ----
+  // requestVideoFrameCallback fires once per frame the compositor actually
+  // presents, so counting them over a ~1s window gives the true on-screen fps
+  // (24/30/60…), not the container's nominal rate. Falls back to decode stats.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    setFps(0);
+    setDroppedFrames(0);
+    type RVFCVideo = HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number, meta: { presentedFrames?: number }) => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    const rv = v as RVFCVideo;
+
+    if (typeof rv.requestVideoFrameCallback === "function") {
+      let handle = 0;
+      let winStart = 0;
+      let winFrames = 0;
+      let lastPresented = -1;
+      const cb = (now: number, meta: { presentedFrames?: number }) => {
+        const pf = meta.presentedFrames ?? 0;
+        if (lastPresented < 0) {
+          lastPresented = pf;
+          winStart = now;
+        } else {
+          winFrames += Math.max(1, pf - lastPresented);
+          lastPresented = pf;
+          const dt = now - winStart;
+          if (dt >= 1000) {
+            setFps(Math.round((winFrames * 1000) / dt));
+            const q = v.getVideoPlaybackQuality?.();
+            if (q) setDroppedFrames(q.droppedVideoFrames || 0);
+            winStart = now;
+            winFrames = 0;
+          }
+        }
+        handle = rv.requestVideoFrameCallback!(cb);
+      };
+      handle = rv.requestVideoFrameCallback(cb);
+      return () => rv.cancelVideoFrameCallback?.(handle);
+    }
+
+    // Fallback (Firefox): sample decoded-frame totals once a second.
+    let lastTotal = 0;
+    let lastTs = 0;
+    const id = setInterval(() => {
+      const q = v.getVideoPlaybackQuality?.();
+      const now = performance.now();
+      if (q) {
+        if (lastTs && !v.paused) {
+          const dt = (now - lastTs) / 1000;
+          if (dt > 0) setFps(Math.max(0, Math.round((q.totalVideoFrames - lastTotal) / dt)));
+        }
+        setDroppedFrames(q.droppedVideoFrames || 0);
+        lastTotal = q.totalVideoFrames;
+        lastTs = now;
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [activeSrc]);
+
+  // Debounce the buffering spinner: only raise it after ~250ms of continuous
+  // stall so quick rebuffers don't flash the overlay on and off.
+  useEffect(() => {
+    if (!loading) {
+      setShowSpinner(false);
+      return;
+    }
+    const t = setTimeout(() => setShowSpinner(true), 250);
+    return () => clearTimeout(t);
+  }, [loading]);
+
+  // Fetch + parse the hover-scrub storyboard once per title.
+  useEffect(() => {
+    if (!storyboardUrl) {
+      setStoryboard(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(storyboardUrl)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+      .then((t) => {
+        if (!cancelled) setStoryboard(parseStoryboard(t, storyboardUrl));
+      })
+      .catch(() => {
+        if (!cancelled) setStoryboard(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storyboardUrl]);
+
+  // A brand-new title starts on the original ladder (Smooth off).
+  useEffect(() => {
+    setUseInterp(false);
   }, [src]);
 
   useEffect(() => {
@@ -267,10 +495,77 @@ export function VideoPlayer({
   }, [playing, bitrateKbps, flush, pushEvent]);
 
   useEffect(() => {
-    const onFs = () => setFullscreen(Boolean(document.fullscreenElement));
+    const onFs = () => {
+      const fs = Boolean(document.fullscreenElement);
+      setFullscreen(fs);
+      if (!fs) setImax(false); // leaving fullscreen exits IMAX fill
+    };
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
+
+  // IMAX fill zoom, measured — not guessed. Cinematic bars are baked into the
+  // pixels, so we draw the current frame to a tiny canvas, scan for the black
+  // bars (top/bottom AND sides), and compute the real content rectangle. Then we
+  // zoom so that rectangle exactly COVERS this screen: from object-contain scale
+  // s = min(bw/fw, bh/fh), Z = max(bw/(cw·s), bh/(ch·s)). Adapts per-video and
+  // per-display (16:9 TV vs 16:10 laptop vs ultrawide) instead of a fixed 1.35.
+  const measureImaxZoom = useCallback(() => {
+    const v = videoRef.current;
+    const box = containerRef.current;
+    if (!v || !box || !v.videoWidth || !v.videoHeight) return;
+    const fw = v.videoWidth;
+    const fh = v.videoHeight;
+    const bw = box.clientWidth;
+    const bh = box.clientHeight;
+    const sw = 240;
+    const sh = Math.max(2, Math.round((sw * fh) / fw));
+    let data: Uint8ClampedArray;
+    try {
+      const cvs = document.createElement("canvas");
+      cvs.width = sw;
+      cvs.height = sh;
+      const ctx = cvs.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(v, 0, 0, sw, sh);
+      data = ctx.getImageData(0, 0, sw, sh).data;
+    } catch {
+      return; // tainted canvas (shouldn't happen: origin sends ACAO) — keep zoom
+    }
+    const T = 18; // near-black luma threshold
+    const lum = (i: number) => 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const rowBlack = (y: number) => {
+      let s = 0, n = 0;
+      for (let x = 0; x < sw; x += 3) { s += lum((y * sw + x) * 4); n++; }
+      return s / n < T;
+    };
+    const colBlack = (x: number) => {
+      let s = 0, n = 0;
+      for (let y = 0; y < sh; y += 3) { s += lum((y * sw + x) * 4); n++; }
+      return s / n < T;
+    };
+    let top = 0; while (top < sh * 0.45 && rowBlack(top)) top++;
+    let bot = sh - 1; while (bot > sh * 0.55 && rowBlack(bot)) bot--;
+    let left = 0; while (left < sw * 0.45 && colBlack(left)) left++;
+    let right = sw - 1; while (right > sw * 0.55 && colBlack(right)) right--;
+    const ch = ((bot - top + 1) / sh) * fh;
+    const cw = ((right - left + 1) / sw) * fw;
+    // Guard: a fade-to-black / very dark frame gives a bogus tiny rect — ignore it.
+    if (ch < fh * 0.3 || cw < fw * 0.3) return;
+    const s = Math.min(bw / fw, bh / fh); // object-contain scale
+    const z = Math.max(bw / (cw * s), bh / (ch * s));
+    setImaxZoom(Math.min(2.6, Math.max(1, z)));
+  }, []);
+
+  // Measure when IMAX turns on, and re-measure if the window/monitor changes
+  // (screenAR changes → the fill zoom changes).
+  useEffect(() => {
+    if (!imax) return;
+    measureImaxZoom();
+    const onResize = () => measureImaxZoom();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [imax, measureImaxZoom]);
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -292,6 +587,28 @@ export function VideoPlayer({
     if (document.fullscreenElement) void document.exitFullscreen();
     else void el.requestFullscreen();
   }, []);
+
+  // Flash a transient center HUD (volume %, ±10s, mute) so keyboard shortcuts
+  // are discoverable and feel responsive. Bumping id re-triggers the animation
+  // even when the same action repeats.
+  const showFlash = useCallback((icon: ReactNode, label: string) => {
+    flashId.current += 1;
+    setFlash({ id: flashId.current, icon, label });
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash(null), 650);
+  }, []);
+
+  // Swap between the original and the smoothed rendition, remembering the play
+  // position so the switch is seamless (onMeta restores it after the reload).
+  const toggleInterp = useCallback(() => {
+    const v = videoRef.current;
+    if (v) resumeRef.current = { t: v.currentTime, play: !v.paused };
+    setUseInterp((on) => {
+      const next = !on;
+      showFlash(<Sparkles className="h-6 w-6" />, next ? `Smooth ${interpFps ?? 60}` : "Smooth off");
+      return next;
+    });
+  }, [showFlash, interpFps]);
 
   const setQuality = (index: number) => {
     if (hlsRef.current) hlsRef.current.currentLevel = index;
@@ -333,28 +650,44 @@ export function VideoPlayer({
         case "arrowleft":
         case "j":
           seek(v.currentTime - 10);
+          showFlash(<Rewind className="h-6 w-6" />, "−10s");
           break;
         case "arrowright":
         case "l":
           seek(v.currentTime + 10);
+          showFlash(<FastForward className="h-6 w-6" />, "+10s");
           break;
-        case "arrowup":
-          v.volume = Math.min(1, v.volume + 0.1);
+        case "arrowup": {
+          const vol = Math.min(1, v.volume + 0.1);
+          v.volume = vol;
+          v.muted = false;
+          showFlash(<Volume2 className="h-6 w-6" />, `${Math.round(vol * 100)}%`);
           break;
-        case "arrowdown":
-          v.volume = Math.max(0, v.volume - 0.1);
+        }
+        case "arrowdown": {
+          const vol = Math.max(0, v.volume - 0.1);
+          v.volume = vol;
+          showFlash(
+            vol === 0 ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />,
+            `${Math.round(vol * 100)}%`,
+          );
           break;
+        }
         case "f":
           toggleFullscreen();
           break;
         case "m":
           toggleMute();
+          showFlash(
+            v.muted ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />,
+            v.muted ? "Muted" : "Unmuted",
+          );
           break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seek, toggleFullscreen, toggleMute]);
+  }, [togglePlay, seek, toggleFullscreen, toggleMute, showFlash]);
 
   const nudge = useCallback(() => {
     setShowControls(true);
@@ -372,8 +705,13 @@ export function VideoPlayer({
     );
   }
 
+  // "Auto · 720p" in auto (shows the rendition actually playing); "720p" when pinned.
   const qualityLabel =
-    currentLevel === -1 ? "Auto" : `${levels.find((l) => l.index === currentLevel)?.height ?? "?"}p`;
+    currentLevel === -1
+      ? playingHeight
+        ? `Auto · ${playingHeight}p`
+        : "Auto"
+      : `${levels.find((l) => l.index === currentLevel)?.height ?? playingHeight ?? "?"}p`;
 
   const menuBtn =
     "flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold hover:bg-white/15";
@@ -385,8 +723,30 @@ export function VideoPlayer({
       ref={containerRef}
       onMouseMove={nudge}
       onMouseLeave={() => !videoRef.current?.paused && !menu && setShowControls(false)}
-      className="group relative aspect-video w-full select-none overflow-hidden rounded-2xl bg-black ring-1 ring-white/10"
+      className={`group relative w-full select-none overflow-hidden bg-black ${
+        fullscreen ? "h-full" : "aspect-video rounded-2xl ring-1 ring-white/10"
+      }`}
     >
+      {/* Ambient backdrop — two blurred, scaled covers of the poster fill the
+          letterbox bars with the poster's own colours (soft "ambilight" glow).
+          Only while the poster is showing: it fades out once the video plays so
+          the frame stands on its own. Skipped in IMAX fill and with no poster. */}
+      {poster && !imax && (
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-0 transition-opacity duration-700 ${
+            playing ? "opacity-0" : "opacity-100"
+          }`}
+        >
+          <div
+            className="absolute inset-0 scale-[1.35] bg-cover bg-center opacity-70 blur-[64px] saturate-150"
+            style={{ backgroundImage: `url("${poster}")` }}
+          />
+          {/* gentle inward vignette so the crisp poster/video still pops */}
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_38%,rgba(0,0,0,0.55))]" />
+        </div>
+      )}
+
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
@@ -394,7 +754,8 @@ export function VideoPlayer({
         poster={poster ?? undefined}
         crossOrigin="anonymous"
         preload="auto"
-        className="h-full w-full bg-black"
+        className={`absolute inset-0 h-full w-full transition-transform duration-200 ${imax ? "object-cover" : "object-contain"}`}
+        style={imax ? { transform: `scale(${imaxZoom})` } : undefined}
         playsInline
       >
         {subtitleTracks.map((t) => (
@@ -402,12 +763,32 @@ export function VideoPlayer({
         ))}
       </video>
 
-      {/* Spinner: ONLY while genuinely buffering / stalled. */}
-      {!error && loading && (
+      {/* Spinner: ONLY while genuinely buffering / stalled (debounced ~250ms so
+          brief rebuffers don't flash it on and off). */}
+      {!error && showSpinner && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
           <Loader2 className="h-12 w-12 animate-spin text-white/80" />
         </div>
       )}
+
+      {/* Transient keyboard HUD — volume %, ±10s, mute. */}
+      <AnimatePresence>
+        {flash && (
+          <motion.div
+            key={flash.id}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 0.15 }}
+            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+          >
+            <div className="flex items-center gap-2.5 rounded-2xl bg-black/60 px-5 py-3 text-white shadow-xl backdrop-blur-md">
+              {flash.icon}
+              <span className="text-lg font-bold tabular-nums">{flash.label}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Center Play button whenever paused (hidden as soon as it's playing). */}
       <AnimatePresence>
@@ -456,14 +837,168 @@ export function VideoPlayer({
             {...menuAnim}
             className="absolute right-3 top-12 z-20 w-56 rounded-xl bg-black/75 p-3 text-[11px] text-white/80 backdrop-blur-xl"
           >
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">QoE</div>
-            <ul className="space-y-0.5">
-              <li>Startup: {startupMs != null ? `${startupMs} ms` : "—"}</li>
-              <li>Bitrate: {bitrateKbps ? `${bitrateKbps} kbps` : "—"}</li>
-              <li>Quality: {qualityLabel}</li>
-              <li>Buffer: {Math.max(0, buffered - current).toFixed(1)} s</li>
-              <li>Rebuffers: {rebuffers}</li>
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px] shadow-emerald-400" />
+              Playback quality
+            </div>
+            <ul className="space-y-1">
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Quality</span>
+                <span className="font-medium text-white">{qualityLabel}</span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Frame rate</span>
+                <span className="font-medium text-white tabular-nums">
+                  {fps ? `${fps} fps` : "—"}
+                </span>
+              </li>
+              {interpSrc && (
+                <li className="flex justify-between gap-4">
+                  <span className="text-white/45">Smooth</span>
+                  <span className="font-medium text-white">
+                    {useInterp ? `On · ${interpFps ?? 60} fps` : "Off"}
+                  </span>
+                </li>
+              )}
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Bitrate</span>
+                <span className="font-medium text-white">
+                  {bitrateKbps ? `${(bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Startup</span>
+                <span className="font-medium text-white">
+                  {startupMs != null ? `${startupMs} ms` : "—"}
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Buffer</span>
+                <span className="font-medium text-white">
+                  {Math.max(0, buffered - current).toFixed(1)} s
+                </span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Rebuffers</span>
+                <span className="font-medium text-white">{rebuffers}</span>
+              </li>
+              <li className="flex justify-between gap-4">
+                <span className="text-white/45">Dropped</span>
+                <span className="font-medium text-white tabular-nums">{droppedFrames}</span>
+              </li>
             </ul>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Tracks — VLC-style overview of every extracted audio + subtitle track. */}
+      <AnimatePresence>
+        {showTracks && (
+          <motion.div
+            {...menuAnim}
+            className="absolute right-3 top-12 z-20 max-h-[70%] w-64 overflow-y-auto rounded-xl bg-black/80 p-3 text-[11px] text-white/80 backdrop-blur-xl"
+          >
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+              <ListChecks className="h-3 w-3" /> Tracks
+            </div>
+
+            {mediaInfo?.video && (
+              <div className="mb-2">
+                <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-white/30">Video</div>
+                <div className="rounded px-2 py-1 text-white/70">
+                  {[
+                    mediaInfo.video.codec?.toUpperCase(),
+                    mediaInfo.video.width && mediaInfo.video.height
+                      ? `${mediaInfo.video.width}×${mediaInfo.video.height}`
+                      : null,
+                    mediaInfo.video.fps ? `${mediaInfo.video.fps} fps` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || "—"}
+                </div>
+              </div>
+            )}
+
+            <div className="mb-2">
+              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-white/30">
+                Audio{audioTracks.length ? ` · ${audioTracks.length}` : ""}
+              </div>
+              {audioTracks.length === 0 ? (
+                <div className="px-2 py-1 text-white/30">No audio track</div>
+              ) : (
+                audioTracks.map((a) => {
+                  const info = mediaInfo?.audio?.[a.index];
+                  const detail = [info?.codec?.toUpperCase(), channelsLabel(info?.channels)]
+                    .filter(Boolean)
+                    .join(" · ");
+                  const active = currentAudio === a.index;
+                  return (
+                    <button
+                      key={a.index}
+                      type="button"
+                      onClick={() => setAudio(a.index)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-white/10 ${active ? "text-indigo-300" : ""}`}
+                    >
+                      <Check className={`h-3 w-3 shrink-0 ${active ? "opacity-100" : "opacity-0"}`} />
+                      <span className="truncate">{a.label}</span>
+                      {detail && <span className="ml-auto shrink-0 whitespace-nowrap text-white/35">{detail}</span>}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {(subtitleTracks.length > 0 ||
+              (mediaInfo?.subtitles ?? []).some((s) => s.text === false)) && (
+              <div>
+                <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-white/30">
+                  Subtitles{subtitleTracks.length ? ` · ${subtitleTracks.length}` : ""}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCaption(-1)}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-white/10 ${currentCaption === -1 ? "text-indigo-300" : ""}`}
+                >
+                  <Check className={`h-3 w-3 shrink-0 ${currentCaption === -1 ? "opacity-100" : "opacity-0"}`} />
+                  <span>Off</span>
+                </button>
+                {subtitleTracks.map((t, i) => {
+                  const active = currentCaption === i;
+                  return (
+                    <button
+                      key={t.url}
+                      type="button"
+                      onClick={() => setCaption(i)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-white/10 ${active ? "text-indigo-300" : ""}`}
+                    >
+                      <Check className={`h-3 w-3 shrink-0 ${active ? "opacity-100" : "opacity-0"}`} />
+                      <span className="truncate">{t.label}</span>
+                      {t.forced && (
+                        <span className="ml-auto shrink-0 rounded bg-white/10 px-1 text-[9px] uppercase tracking-wide text-white/50">
+                          forced
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                {/* Image-based subs (PGS/VobSub) can't render in-browser — listed but greyed. */}
+                {(mediaInfo?.subtitles ?? [])
+                  .filter((s) => s.text === false)
+                  .map((s, i) => (
+                    <div
+                      key={`img-${s.language}-${i}`}
+                      className="flex items-center gap-2 rounded px-2 py-1 text-white/30"
+                      title="Image-based subtitle — not viewable in a browser"
+                    >
+                      <span className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{s.label}</span>
+                      <span className="ml-auto shrink-0 rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-white/30">
+                        image
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -472,13 +1007,53 @@ export function VideoPlayer({
         animate={{ opacity: showControls || !playing ? 1 : 0 }}
         className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8"
       >
-        <div className="relative mb-1.5 h-1.5">
+        <div
+          className="relative mb-1.5 h-1.5"
+          onMouseMove={(e) => {
+            if (!duration) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            setScrub({ x, cw: rect.width, time: Math.max(0, Math.min(1, x / rect.width)) * duration });
+          }}
+          onMouseLeave={() => setScrub(null)}
+        >
           <div className="absolute inset-0 rounded-full bg-white/20" />
           <div className="absolute inset-y-0 left-0 rounded-full bg-white/40" style={{ width: `${duration ? (buffered / duration) * 100 : 0}%` }} />
           <div className="absolute inset-y-0 left-0 rounded-full bg-indigo-400" style={{ width: `${duration ? (current / duration) * 100 : 0}%` }} />
+          {/* Hover-scrub thumbnail: the storyboard cell under the cursor. */}
+          {scrub && storyboard && duration > 0 && (() => {
+            const cue =
+              storyboard.cues.find((c) => scrub.time >= c.start && scrub.time < c.end) ??
+              storyboard.cues[storyboard.cues.length - 1];
+            const half = cue.w / 2;
+            const left = Math.max(half, Math.min(scrub.x, scrub.cw - half));
+            return (
+              <div
+                className="pointer-events-none absolute bottom-full z-30 mb-3 flex -translate-x-1/2 flex-col items-center"
+                style={{ left }}
+              >
+                <div
+                  className="rounded-md ring-1 ring-white/25 shadow-2xl"
+                  style={{
+                    width: cue.w,
+                    height: cue.h,
+                    backgroundImage: `url("${storyboard.sprite}")`,
+                    backgroundPosition: `-${cue.x}px -${cue.y}px`,
+                    backgroundRepeat: "no-repeat",
+                  }}
+                />
+                <span className="mt-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-white">
+                  {fmt(scrub.time)}
+                </span>
+              </div>
+            );
+          })()}
           <input
             type="range" min={0} max={duration || 0} step="0.1" value={current}
             onChange={(e) => seek(Number(e.target.value))}
+            // Suppress the native arrow-step so a focused seek bar doesn't
+            // double-seek against the window-level ±10s handler.
+            onKeyDown={(e) => { if (e.key.startsWith("Arrow")) e.preventDefault(); }}
             className="absolute inset-0 w-full cursor-pointer opacity-0" aria-label="Seek"
           />
         </div>
@@ -500,14 +1075,17 @@ export function VideoPlayer({
                   v.muted = Number(e.target.value) === 0;
                 }
               }}
+              // Let the window-level ±10% handler own arrow keys (avoids a
+              // native +0.05 step fighting it when the slider is focused).
+              onKeyDown={(e) => { if (e.key.startsWith("Arrow")) e.preventDefault(); }}
               className="h-1 w-20 cursor-pointer accent-white" aria-label="Volume"
             />
           </div>
           <span className="text-xs tabular-nums text-white/80">{fmt(current)} / {fmt(duration)}</span>
 
           <div className="ml-auto flex items-center gap-1">
-            {/* Audio / language */}
-            {audioTracks.length > 1 && (
+            {/* Audio / language — shown whenever there's at least one track (VLC-style). */}
+            {audioTracks.length >= 1 && (
               <div className="relative">
                 <button type="button" onClick={() => setMenu(menu === "audio" ? null : "audio")} className={menuBtn} aria-label="Audio">
                   <Languages className="h-4 w-4" />
@@ -515,11 +1093,18 @@ export function VideoPlayer({
                 <AnimatePresence>
                   {menu === "audio" && (
                     <motion.div {...menuAnim} className="absolute bottom-9 right-0 min-w-[140px] rounded-lg bg-black/90 p-1 text-xs shadow-xl ring-1 ring-white/10">
-                      {audioTracks.map((a) => (
-                        <button key={a.index} type="button" onClick={() => setAudio(a.index)} className={itemCls(currentAudio === a.index)}>
-                          {a.label}
-                        </button>
-                      ))}
+                      {audioTracks.map((a) => {
+                        const info = mediaInfo?.audio?.[a.index];
+                        const detail = [info?.codec?.toUpperCase(), channelsLabel(info?.channels)]
+                          .filter(Boolean)
+                          .join(" · ");
+                        return (
+                          <button key={a.index} type="button" onClick={() => setAudio(a.index)} className={itemCls(currentAudio === a.index)}>
+                            {a.label}
+                            {detail && <span className="ml-1 text-white/35">{detail}</span>}
+                          </button>
+                        );
+                      })}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -580,8 +1165,64 @@ export function VideoPlayer({
               </AnimatePresence>
             </div>
 
-            <button type="button" onClick={() => setShowStats((s) => !s)} aria-label="Stats" className={`rounded p-1 hover:bg-white/15 ${showStats ? "text-indigo-300" : ""}`}>
+            {/* Smooth (interpolated) rendition toggle — only when one exists. */}
+            {interpSrc && (
+              <button
+                type="button"
+                onClick={toggleInterp}
+                aria-pressed={useInterp}
+                title={
+                  useInterp
+                    ? `Smooth motion on — interpolated to ${interpFps ?? 60}fps`
+                    : `Smooth motion — interpolate to ${interpFps ?? 60}fps`
+                }
+                className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-bold transition-colors ${
+                  useInterp
+                    ? "bg-indigo-500/90 text-white shadow-[0_0_10px] shadow-indigo-500/40"
+                    : "text-white/80 hover:bg-white/15"
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5" /> {interpFps ?? 60}
+              </button>
+            )}
+
+            {/* Tracks — VLC-style panel of every extracted audio + subtitle track. */}
+            <button
+              type="button"
+              onClick={() => { setShowTracks((s) => !s); setShowStats(false); }}
+              aria-label="Tracks"
+              className={`rounded p-1 hover:bg-white/15 ${showTracks ? "text-indigo-300" : ""}`}
+            >
+              <ListChecks className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={() => { setShowStats((s) => !s); setShowTracks(false); }} aria-label="Stats" className={`rounded p-1 hover:bg-white/15 ${showStats ? "text-indigo-300" : ""}`}>
               <Gauge className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              // IMAX only toggles the zoom-fill; it NEVER changes fullscreen.
+              // Enabled only while in fullscreen, and turning it off keeps you
+              // in fullscreen (leaving fullscreen is what resets imax, via onFs).
+              onClick={() => setImax((v) => !v)}
+              disabled={!fullscreen}
+              aria-pressed={imax}
+              aria-label="IMAX fill mode"
+              title={
+                !fullscreen
+                  ? "IMAX is available in fullscreen — enter fullscreen first"
+                  : imax
+                    ? "IMAX on — click to turn off (stays fullscreen)"
+                    : "IMAX — zoom past the cinematic black bars to fill the screen (crops the sides, never stretches)"
+              }
+              className={`rounded px-1.5 py-1 text-[11px] font-extrabold tracking-wide transition-colors ${
+                !fullscreen
+                  ? "cursor-not-allowed text-white/25"
+                  : imax
+                    ? "bg-[#0a4595] text-white shadow-[0_0_10px] shadow-blue-500/50 ring-1 ring-blue-400/60"
+                    : "text-white/80 hover:bg-white/15"
+              }`}
+            >
+              IMAX
             </button>
             <button type="button" onClick={toggleFullscreen} aria-label="Fullscreen">
               {fullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}

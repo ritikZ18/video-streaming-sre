@@ -1,12 +1,36 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Loader2 } from "lucide-react";
 import { Navbar } from "../../components/layout/Navbar";
-import { Footer } from "../../components/layout/Footer";
 import { VideoPlayer } from "../../components/player/VideoPlayer";
 import { getMovie } from "../../lib/api";
-import type { SubtitleTrack } from "../../lib/types";
+import type { MediaInfo, SubtitleTrack } from "../../lib/types";
+
+/** Whether THIS browser can actually decode 10-bit HDR HEVC smoothly — not just
+ * claim to. `mediaCapabilities.decodingInfo` is far more accurate than
+ * `isTypeSupported` (which Chrome answers `true` for `hvc1`, then fails to decode).
+ * Returns true only on a browser that reports real, smooth HEVC decode (Safari,
+ * Chrome/Edge with HEVC hardware). */
+async function canDecodeHevc(): Promise<boolean> {
+  const mc = typeof navigator !== "undefined" ? navigator.mediaCapabilities : undefined;
+  if (!mc?.decodingInfo) return false;
+  try {
+    const info = await mc.decodingInfo({
+      type: "media-source",
+      video: {
+        contentType: 'video/mp4; codecs="hvc1.2.4.L153.B0"',
+        width: 1920,
+        height: 1080,
+        bitrate: 6_000_000,
+        framerate: 30,
+      },
+    });
+    return info.supported && info.smooth;
+  } catch {
+    return false;
+  }
+}
 
 export default function PlayerPage() {
   const [p, setP] = useState<{
@@ -14,57 +38,97 @@ export default function PlayerPage() {
     title: string | null;
     poster: string | null;
     id: string | null;
-  }>({ url: null, title: null, poster: null, id: null });
+    storyboard: string | null;
+    interpUrl: string | null;
+    interpFps: number | null;
+  }>({
+    url: null, title: null, poster: null, id: null,
+    storyboard: null, interpUrl: null, interpFps: null,
+  });
   const [subs, setSubs] = useState<SubtitleTrack[]>([]);
+  const [media, setMedia] = useState<MediaInfo | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const q = new URLSearchParams(window.location.search);
     const id = q.get("id");
-    setP({ url: q.get("url"), title: q.get("title"), poster: q.get("poster"), id });
+    const urlParam = q.get("url"); // legacy / seed fallback
+    setP((prev) => ({
+      ...prev,
+      url: urlParam,
+      title: q.get("title"),
+      poster: q.get("poster"),
+      id,
+    }));
 
-    // Real (catalog) movies: fetch subtitle tracks + authoritative metadata.
+    // Preferred path: only an id is in the URL — fetch everything server-side so
+    // the manifest/poster URLs never appear in the address bar.
     if (id) {
-      void getMovie(id).then((m) => {
-        if (!m) return;
-        setSubs(m.subtitleTracks ?? []);
-        setP((prev) => ({
-          url: m.manifestUrl ?? prev.url,
-          title: m.title ?? prev.title,
-          poster: m.thumbnailUrl ?? prev.poster,
-          id,
-        }));
-      });
+      setLoading(!urlParam);
+      void getMovie(id)
+        .then(async (m) => {
+          if (m) {
+            setSubs(m.subtitleTracks ?? []);
+            setMedia(m.mediaInfo ?? null);
+            // HDR titles ship an HEVC master AND an H.264 one. Use HEVC only if the
+            // browser can really decode it; otherwise the universal H.264 master.
+            const url =
+              m.hdrManifestUrl && (await canDecodeHevc())
+                ? m.hdrManifestUrl
+                : m.manifestUrl;
+            setP((prev) => ({
+              ...prev,
+              url: url ?? prev.url,
+              title: m.title ?? prev.title,
+              poster: m.thumbnailUrl ?? prev.poster,
+              id,
+              storyboard: m.storyboardUrl ?? null,
+              // A smoothed rendition is only offered when the browser is NOT using
+              // the HEVC (HDR) master — interpolation is H.264/SDR only.
+              interpUrl: m.hdrManifestUrl && url === m.hdrManifestUrl ? null : m.interpManifestUrl ?? null,
+              interpFps: m.interpFps ?? null,
+            }));
+          }
+        })
+        .finally(() => setLoading(false));
     }
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col bg-black text-white">
+    <div className="flex h-screen flex-col overflow-hidden text-white">
       <Navbar />
-      <main className="flex-1 pt-16">
-        <section className="mx-auto w-full max-w-5xl px-4 py-8">
+      <main className="flex flex-1 items-center justify-center px-4 pt-16 pb-4">
+        <div
+          className="relative w-full"
+          style={{ maxWidth: "calc((100vh - 9rem) * 16 / 9)" }}
+        >
           <button
             type="button"
             onClick={() => window.history.back()}
-            className="mb-4 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-semibold text-white/70 hover:text-white"
+            className="absolute -top-8 left-0 z-10 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-semibold text-white/70 hover:text-white"
           >
             <ChevronLeft className="h-4 w-4" /> Back
           </button>
-
-          <VideoPlayer
-            src={p.url}
-            title={p.title}
-            poster={p.poster}
-            contentId={p.id}
-            subtitleTracks={subs}
-          />
-
-          {p.title && (
-            <h1 className="mt-4 text-xl font-bold tracking-tight">{p.title}</h1>
+          {loading ? (
+            <div className="flex aspect-video w-full items-center justify-center rounded-2xl bg-zinc-900 ring-1 ring-white/10">
+              <Loader2 className="h-10 w-10 animate-spin text-white/70" />
+            </div>
+          ) : (
+            <VideoPlayer
+              src={p.url}
+              title={p.title}
+              poster={p.poster}
+              contentId={p.id}
+              subtitleTracks={subs}
+              storyboardUrl={p.storyboard}
+              interpSrc={p.interpUrl}
+              interpFps={p.interpFps}
+              mediaInfo={media}
+            />
           )}
-        </section>
+        </div>
       </main>
-      <Footer />
     </div>
   );
 }

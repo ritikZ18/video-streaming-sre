@@ -5,14 +5,44 @@ import { Lock, LogOut } from "lucide-react";
 import { Navbar } from "../../components/layout/Navbar";
 import { Footer } from "../../components/layout/Footer";
 import { UploadDropzone } from "../../components/upload/UploadDropzone";
-import { UploadForm } from "../../components/upload/UploadForm";
-import { UploadProgress } from "../../components/upload/UploadProgress";
+import { UploadQueue } from "../../components/upload/UploadQueue";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
-import type { Movie } from "../../lib/types";
-import { uploadVideo, adminLogin, MAX_UPLOAD_MB } from "../../lib/api";
+import { AdminCatalog } from "../../components/admin/AdminCatalog";
+import { AdminObservability } from "../../components/admin/AdminObservability";
+import { adminLogin } from "../../lib/api";
+import { VIEWER_ONLY } from "../../lib/backend";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
 export default function AdminPage() {
+  // The public viewer build ships without admin: the upload-api write endpoints
+  // aren't even exposed through the tunnel gateway, so there's nothing to sign
+  // into here. Keep it a clean dead-end rather than a login that can't succeed.
+  if (VIEWER_ONLY) return <AdminUnavailable />;
+  return <AdminApp />;
+}
+
+function AdminUnavailable() {
+  return (
+    <div className="min-h-screen text-white">
+      <Navbar />
+      <main className="px-8 pt-24 pb-16">
+        <div className="mx-auto mt-16 max-w-md rounded-2xl bg-white/5 p-8 text-center">
+          <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-white/10">
+            <Lock className="h-6 w-6" />
+          </span>
+          <h1 className="text-lg font-bold tracking-tight">Admin isn&apos;t available here</h1>
+          <p className="mt-2 text-sm text-white/60">
+            This is the public viewer. Uploading and managing titles run on the operator&apos;s
+            local instance — browse and watch is all this deployment does.
+          </p>
+        </div>
+      </main>
+      <Footer />
+    </div>
+  );
+}
+
+function AdminApp() {
   const [authed, setAuthed] = useState(false);
   const [checked, setChecked] = useState(false);
 
@@ -22,7 +52,7 @@ export default function AdminPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-black text-white">
+    <div className="min-h-screen text-white">
       <Navbar />
       <main className="px-8 pt-24 pb-16">
         {!checked ? null : authed ? (
@@ -105,50 +135,33 @@ function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-// Survives a page refresh: the transcode runs server-side, so we only need to
-// remember which job to reattach the progress view to on reload.
-const ACTIVE_JOB_KEY = "streamsre.activeJob";
+type Tab = "studio" | "observability";
 
 function AdminPanel({ onLogout }: { onLogout: () => void }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [, setMovieMeta] = useState<Partial<Movie> | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [uploadPct, setUploadPct] = useState(0);
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [tab, setTab] = useState<Tab>("studio");
 
-  // Reattach to an in-flight transcode after a reload (refresh-safe).
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(ACTIVE_JOB_KEY);
-      if (saved) {
-        setJobId(saved);
-        setUploadPct(100); // the upload itself already finished
-      }
-    } catch {
-      /* localStorage unavailable — non-fatal */
-    }
-  }, []);
-
-  const clearJob = () => {
-    setJobId(null);
-    setUploadPct(0);
-    setStreamUrl(null);
-    try {
-      localStorage.removeItem(ACTIVE_JOB_KEY);
-    } catch {
-      /* ignore */
-    }
+  const addFiles = (picked: File[]) => {
+    const key = (f: File) => `${f.name}::${f.size}::${f.lastModified}`;
+    setFiles((prev) => {
+      const have = new Set(prev.map(key));
+      const additions = picked.filter((f) => !have.has(key(f)));
+      return additions.length ? [...prev, ...additions] : prev;
+    });
   };
 
+  const tabs: { key: Tab; label: string }[] = [
+    { key: "studio", label: "Studio" },
+    { key: "observability", label: "Observability" },
+  ];
+
   return (
-    <>
-      <div className="mb-8 flex max-w-3xl items-start justify-between">
+    <div className="max-w-5xl">
+      <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Admin · Upload</h1>
+          <h1 className="text-2xl font-bold tracking-heading">Admin</h1>
           <p className="mt-2 text-sm text-white/70">
-            Ingest a new video. The Upload API stores the raw file, enqueues a
-            transcode job, and the worker publishes HLS + DASH renditions.
+            Upload and manage titles, or watch live playback quality.
           </p>
         </div>
         <button
@@ -161,75 +174,37 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
         </button>
       </div>
 
-      <div className="grid gap-8 md:grid-cols-[2fr,3fr]">
-        <UploadDropzone file={file} onFileSelected={setFile} />
-        <UploadForm
-          disabled={!file}
-          file={file}
-          onSubmitted={async (meta) => {
-            setMovieMeta(meta);
-            setError(null);
-            if (!file) return;
-            if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-              setError(
-                `File is too large (${(file.size / 1024 / 1024).toFixed(0)} MB). Max is ${MAX_UPLOAD_MB} MB.`,
-              );
-              return;
-            }
-            setUploadPct(0);
-            try {
-              const res = await uploadVideo(
-                file,
-                {
-                  title: meta.title,
-                  genre: meta.genre,
-                  year: meta.year,
-                  rating: meta.rating,
-                  duration: meta.duration,
-                  description: meta.description,
-                  tag: meta.tag ?? undefined,
-                },
-                (pct) => setUploadPct(pct),
-              );
-              setJobId(res.job_id);
-              try {
-                localStorage.setItem(ACTIVE_JOB_KEY, res.job_id);
-              } catch {
-                /* ignore */
-              }
-            } catch (e) {
-              setError((e as Error).message);
-            }
-          }}
-        />
+      {/* Tabs */}
+      <div className="mb-6 flex gap-1 rounded-lg bg-white/5 p-1">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            className={[
+              "rounded-md px-4 py-1.5 text-sm font-semibold transition-colors",
+              tab === t.key ? "bg-white text-black" : "text-white/60 hover:text-white",
+            ].join(" ")}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <div className="mt-10">
-        <UploadProgress
-          uploadPct={uploadPct}
-          jobId={jobId}
-          onComplete={(url) => {
-            setStreamUrl(url);
-            try {
-              localStorage.removeItem(ACTIVE_JOB_KEY);
-            } catch {
-              /* ignore */
-            }
-          }}
-          onCancel={clearJob}
-        />
-        {streamUrl && (
-          <div className="mt-4 text-sm text-white/80">
-            Stream ready:{" "}
-            <a href={`/player?url=${encodeURIComponent(streamUrl)}`} className="underline">
-              open player
-            </a>
+      {tab === "studio" ? (
+        <>
+          <div className="grid max-w-4xl gap-6">
+            <UploadDropzone count={files.length} onFilesSelected={addFiles} />
+            <UploadQueue files={files} onClear={() => setFiles([])} />
           </div>
-        )}
-        {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
-      </div>
-
-      <AdminMovieForm />
-    </>
+          <AdminMovieForm />
+          <div className="mt-4">
+            <AdminCatalog />
+          </div>
+        </>
+      ) : (
+        <AdminObservability />
+      )}
+    </div>
   );
 }

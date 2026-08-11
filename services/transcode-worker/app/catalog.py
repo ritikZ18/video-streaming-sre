@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import json
+from decimal import Decimal
+from typing import Any
+
 import boto3
 import structlog
 from app.config import get_settings
 from botocore.exceptions import ClientError
 
 logger = structlog.get_logger()
+
+
+def _ddb_safe(value: Any) -> Any:
+    """Make a value safe for DynamoDB (boto3 resource): recursively convert every
+    float to Decimal. A single stray float (e.g. an fps like 23.976) otherwise
+    fails the whole write with 'Float types are not supported'."""
+    return json.loads(json.dumps(value), parse_float=Decimal)
 
 
 def _resource():
@@ -46,9 +57,11 @@ def _update(
     dash_url: str,
     duration: str | None = None,
     thumbnail_url: str | None = None,
+    hdr_manifest_url: str | None = None,
     audio_tracks: list | None = None,
     subtitle_tracks: list | None = None,
     media_info: dict | None = None,
+    storyboard_url: str | None = None,
 ) -> None:
     expr = "SET #s = :s, manifest_url = :m, dash_url = :d, #p = :p, #stg = :stg"
     names = {"#s": "status", "#p": "progress", "#stg": "stage"}
@@ -59,6 +72,12 @@ def _update(
         ":p": 100,
         ":stg": "ready",
     }
+    if hdr_manifest_url:
+        expr += ", hdr_manifest_url = :h"
+        values[":h"] = hdr_manifest_url
+    if storyboard_url:
+        expr += ", storyboard_url = :sb"
+        values[":sb"] = storyboard_url
     if duration:
         # "duration" is a DynamoDB reserved word, so alias it.
         expr += ", #dur = :dur"
@@ -75,12 +94,15 @@ def _update(
         values[":su"] = subtitle_tracks
     if media_info is not None:
         expr += ", media_info = :mi"
-        values[":mi"] = media_info
+        values[":mi"] = _ddb_safe(media_info)
     _table().update_item(
         Key={"id": movie_id},
         UpdateExpression=expr,
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
+        # Don't resurrect a row deleted/canceled mid-job: marking ready would
+        # otherwise upsert a row missing title/genre/year/rating.
+        ConditionExpression="attribute_exists(id)",
     )
 
 
@@ -103,6 +125,44 @@ def delete_row(movie_id: str) -> None:
         logger.warning("catalog_delete_failed", movie_id=movie_id, error=str(exc))
 
 
+def clear_cancel(movie_id: str) -> None:
+    """Drop a stale cancel flag so a re-enqueued job starts fresh. Without this, a
+    leftover ``cancel_requested`` from a prior session makes the worker immediately
+    cancel the re-enqueued job — and cancel-cleanup deletes its source."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression="REMOVE cancel_requested",
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("catalog_clear_cancel_failed", movie_id=movie_id, error=str(exc))
+
+
+def list_processing_ids() -> list[str]:
+    """IDs of every row still marked 'processing'. Used by the startup reconciler to
+    recover jobs whose SQS message was lost when the ephemeral queue restarted."""
+    ids: list[str] = []
+    try:
+        table = _table()
+        kwargs: dict = {
+            "FilterExpression": "#s = :s",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":s": "processing"},
+            "ProjectionExpression": "id",
+        }
+        while True:
+            resp = table.scan(**kwargs)
+            ids.extend(it["id"] for it in resp.get("Items", []) if "id" in it)
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs["ExclusiveStartKey"] = lek
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("catalog_list_processing_failed", error=str(exc))
+    return ids
+
+
 def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
     """Best-effort transcode progress (0-100) + current stage. Never raises."""
     try:
@@ -118,9 +178,104 @@ def update_progress(movie_id: str, pct: int, stage: str | None = None) -> None:
             UpdateExpression=expr,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
+            # Never recreate a row that was deleted mid-job: an unguarded update_item
+            # upserts, leaving a phantom {id, progress, stage} row with no required
+            # fields that then 500s the catalog listing.
+            ConditionExpression="attribute_exists(id)",
         )
     except Exception as exc:  # noqa: BLE001 - progress is non-critical
-        logger.warning("catalog_progress_update_failed", movie_id=movie_id, error=str(exc))
+        # ConditionalCheckFailedException just means the row is gone (canceled/deleted).
+        logger.warning("catalog_progress_update_skipped", movie_id=movie_id, error=str(exc))
+
+
+def update_interp(movie_id: str, status: str, detail: str | None = None) -> None:
+    """Best-effort update of the frame-interpolation lifecycle field
+    (queued|processing|done|skipped|failed) + an optional human reason. Never
+    raises; a missing row (canceled/deleted) is silently ignored."""
+    try:
+        expr = "SET interp_status = :s"
+        values: dict[str, object] = {":s": status}
+        if detail is not None:
+            expr += ", interp_detail = :d"
+            values[":d"] = detail
+        else:
+            expr += " REMOVE interp_detail"
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression=expr,
+            ExpressionAttributeValues=values,
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - interp state is non-critical
+        logger.warning("catalog_interp_update_skipped", movie_id=movie_id, error=str(exc))
+
+
+def set_interp_variant(
+    movie_id: str, manifest_url: str, dash_url: str, fps: int
+) -> None:
+    """Attach a NON-destructive smoothed (interpolated) rendition to a title.
+
+    Sets ``interp_manifest_url`` / ``interp_dash_url`` / ``interp_fps`` and flips
+    ``interp_status`` to done WITHOUT touching the title's own manifest_url/status
+    — the original ladder stays intact and the player offers a Smooth toggle."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression=(
+                "SET interp_manifest_url = :m, interp_dash_url = :d, "
+                "interp_fps = :f, interp_status = :s REMOVE interp_detail"
+            ),
+            ExpressionAttributeValues={
+                ":m": manifest_url,
+                ":d": dash_url,
+                ":f": int(fps),
+                ":s": "done",
+            },
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - variant state is non-critical
+        logger.warning("catalog_set_interp_variant_skipped", movie_id=movie_id, error=str(exc))
+
+
+def update_interp_progress(
+    movie_id: str, progress: int, stage: str, started_at: float | None = None
+) -> None:
+    """Best-effort live progress for a running interpolation: the I/O Framer
+    sidecar's own 0-100 + stage (extracting/interpolating/encoding), so the UI can
+    show a real percentage + ETA instead of a bare 'processing'. ``started_at``
+    (epoch seconds, set once at the start of the pass) anchors the elapsed/ETA
+    clock. Never raises; a missing row (canceled/deleted) is silently ignored."""
+    try:
+        expr = "SET interp_progress = :p, interp_stage = :st"
+        values: dict[str, object] = {":p": int(progress), ":st": stage}
+        if started_at is not None:
+            expr += ", interp_started_at = :sa"
+            values[":sa"] = int(started_at)
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression=expr,
+            ExpressionAttributeValues=values,
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - progress is non-critical
+        logger.warning("catalog_interp_progress_skipped", movie_id=movie_id, error=str(exc))
+
+
+def set_extract_tasks(movie_id: str, tasks: list) -> None:
+    """Best-effort write of the audio/subtitle extraction checklist for a running
+    transcode: a list of ``{kind, label, lang, codec, state}`` the admin UI renders
+    as a live 'todo list' (pending -> done, image-based subs marked 'image').
+    Persisted right after the probe so it shows for the whole job, then rewritten as
+    each track lands. Never raises; a missing row (canceled/deleted) is ignored."""
+    try:
+        _table().update_item(
+            Key={"id": movie_id},
+            UpdateExpression="SET extract_tasks = :et",
+            ExpressionAttributeValues={":et": _ddb_safe(tasks)},
+            ConditionExpression="attribute_exists(id)",
+        )
+    except Exception as exc:  # noqa: BLE001 - checklist is non-critical
+        logger.warning("catalog_set_extract_tasks_skipped", movie_id=movie_id, error=str(exc))
 
 
 def mark_ready(
@@ -129,12 +284,17 @@ def mark_ready(
     dash_url: str,
     duration: str | None = None,
     thumbnail_url: str | None = None,
+    hdr_manifest_url: str | None = None,
     audio_tracks: list | None = None,
     subtitle_tracks: list | None = None,
     media_info: dict | None = None,
+    storyboard_url: str | None = None,
 ) -> None:
     """Flip the catalog entry for this job to ready and attach its manifest URLs,
     duration, thumbnail, audio/subtitle track lists and media metadata.
+
+    ``hdr_manifest_url`` (the HEVC master) is set only for HDR videos; the player
+    switches to it when the browser can decode HEVC.
 
     The movie id equals the job id (see upload-api), so a completed transcode
     maps directly onto its catalog row.
@@ -142,15 +302,22 @@ def mark_ready(
     kw = {
         "duration": duration,
         "thumbnail_url": thumbnail_url,
+        "hdr_manifest_url": hdr_manifest_url,
         "audio_tracks": audio_tracks,
         "subtitle_tracks": subtitle_tracks,
         "media_info": media_info,
+        "storyboard_url": storyboard_url,
     }
     try:
         _update(movie_id, manifest_url, dash_url, **kw)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "ResourceNotFoundException":
             _ensure_table()
             _update(movie_id, manifest_url, dash_url, **kw)
+            return
+        if code == "ConditionalCheckFailedException":
+            # Row was deleted/canceled before this job finished — nothing to mark.
+            logger.warning("catalog_mark_ready_skipped_row_gone", movie_id=movie_id)
             return
         raise

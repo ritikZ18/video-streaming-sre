@@ -1,3 +1,5 @@
+<div align="center">
+
 # 🎬 StreamSRE — Mini Video Streaming Platform + SRE
 
 **An end-to-end OTT streaming stack** (upload → GPU transcode → CMAF packaging → HLS/DASH → adaptive web player)
@@ -5,6 +7,7 @@
 
 `Apple-TV-style player` · `FFmpeg + NVENC/NVDEC` · `HLS + MPEG-DASH from one encode` · `HDR/HEVC + SDR/H.264` · `Prometheus + Grafana`
 
+</div>
 
 ---
 
@@ -48,38 +51,36 @@ It is designed so you can walk an interviewer through:
 
 | Capability | What it does |
 |---|---|
-| **GPU transcode** | FFmpeg with a 3-tier NVENC/NVDEC → hybrid → CPU fallback ladder |
-| **Adaptive streaming** | HLS (`master.m3u8`) + MPEG-DASH (`manifest.mpd`) from the *same* CMAF segments |
-| **HDR + SDR dual codec** | HEVC/Main10 (`master_hevc.m3u8`) for HDR-capable browsers, H.264 for everyone else |
-| **Capability-based selection** | Player uses `navigator.mediaCapabilities` to pick a codec it can *actually* decode |
-| **Self-healing** | Worker startup reconciler recovers jobs whose queue message was lost on restart |
-| **QoE telemetry** | Startup time, rebuffering, bitrate switches, live FPS + dropped frames → beacon collector |
-| **SRE stack** | Prometheus + Alertmanager + Grafana with SLO dashboards & burn-rate alerts |
+| 🎞️ **GPU transcode** | FFmpeg with a 3-tier NVENC/NVDEC → hybrid → CPU fallback ladder |
+| 📶 **Adaptive streaming** | HLS (`master.m3u8`) + MPEG-DASH (`manifest.mpd`) from the *same* CMAF segments |
+| 🌈 **HDR + SDR dual codec** | HEVC/Main10 (`master_hevc.m3u8`) for HDR-capable browsers, H.264 for everyone else |
+| 🧠 **Capability-based selection** | Player uses `navigator.mediaCapabilities` to pick a codec it can *actually* decode |
+| 🩹 **Self-healing** | Worker startup reconciler recovers jobs whose queue message was lost on restart |
+| 📊 **QoE telemetry** | Startup time, rebuffering, bitrate switches, live FPS + dropped frames → beacon collector |
+| 🚨 **SRE stack** | Prometheus + Alertmanager + Grafana with SLO dashboards & burn-rate alerts |
 
 ---
 
 ## 2. Screenshots
 
-> Drop PNGs into [`docs/images/`](docs/images/) with the filenames below and they'll render here.
-
 <table>
   <tr>
     <td width="50%" valign="top">
-      <b> 1. Home Apple-TV-style catalog</b><br/><br/>
+      <b>🏠 Home — Apple-TV-style catalog</b><br/>
       <img src="https://github.com/user-attachments/assets/1310f76a-6c4d-44b7-977b-fc2e8dd55755" alt="Home page showing an Apple-TV-style catalog grid of movie posters" width="100%"/>
     </td>
     <td width="50%" valign="top">
-      <b> 2. Player live QoE overlay</b><br/><br/>
+      <b>▶️ Player — live QoE overlay</b><br/>
       <img src="https://github.com/user-attachments/assets/663b2736-0ca5-4cd7-b046-4ee5675a78c7" alt="Video player with the live QoE stats overlay showing quality, frame rate and bitrate" width="100%"/>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <b> 3. Admin studio dashboard &amp; catalog</b><br/><br/>
+      <b>🛠️ Admin studio — dashboard &amp; catalog</b><br/>
       <img src="https://github.com/user-attachments/assets/f4d6129e-8785-4353-8196-6ffa1ba21378" alt="Admin studio showing stat cards and the editable catalog table" width="100%"/>
     </td>
     <td width="50%" valign="top">
-      <b> 4. Grafana SLO &amp; burn-rate dashboard</b><br/><br/>
+      <b>📈 Grafana — SLO &amp; burn-rate dashboard</b><br/>
       <img src="https://github.com/user-attachments/assets/f3518a80-987f-4851-a3da-de6a11ffcea8" alt="Grafana dashboard with SLO and burn-rate panels" width="100%"/>
     </td>
   </tr>
