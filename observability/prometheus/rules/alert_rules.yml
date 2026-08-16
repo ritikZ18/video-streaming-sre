@@ -11,3 +11,49 @@ groups:
           summary: "Manifest availability fast burn"
           description: "Fast error budget burn on manifest availability."
 
+  - name: live_streaming_alerts
+    rules:
+      # A live encoder that can't hold realtime will drift and eventually stall the
+      # stream — the defining failure mode of live. Guarded by live_channel_up so a
+      # stopped channel (speed reset to 0) never fires.
+      - alert: LiveEncoderBehindRealtime
+        expr: live_encoder_speed_ratio < 0.95 and on(event) live_channel_up == 1
+        for: 30s
+        labels:
+          severity: warning
+          team: video-sre
+        annotations:
+          summary: "Live encoder {{ $labels.event }} below realtime"
+          description: "Encoder speed {{ $value | printf \"%.2f\" }}x (<0.95x) for 30s — drop a rung, lower the ceiling, or enable NVENC."
+
+      # Channel marked up but producing no frames — a wedged encoder/input.
+      - alert: LiveEncoderStalled
+        expr: live_encoder_fps == 0 and on(event) live_channel_up == 1
+        for: 45s
+        labels:
+          severity: warning
+          team: video-sre
+        annotations:
+          summary: "Live channel {{ $labels.event }} producing no frames"
+          description: "live_encoder_fps has been 0 for 45s while the channel is up — the source or encoder is wedged."
+
+      - alert: LivePackagerDown
+        expr: up{job="live-packager"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: video-sre
+        annotations:
+          summary: "Live packager is down"
+          description: "Prometheus cannot scrape live-packager — no live channel can start or continue."
+
+      - alert: LiveIngestDown
+        expr: up{job="live-ingest"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          team: video-sre
+        annotations:
+          summary: "Live ingest (MediaMTX) is down"
+          description: "The RTMP/SRT/WHIP ingest server is unreachable — encoders cannot connect."
+

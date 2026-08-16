@@ -53,6 +53,7 @@ It is designed so you can walk an interviewer through:
 |---|---|
 | 🎞️ **GPU transcode** | FFmpeg with a 3-tier NVENC/NVDEC → hybrid → CPU fallback ladder |
 | 📶 **Adaptive streaming** | HLS (`master.m3u8`) + MPEG-DASH (`manifest.mpd`) from the *same* CMAF segments |
+| 🔴 **Live streaming** | RTMP/SRT/WHIP ingest **or** go-live from an upload → HLS ladder; auto go-live on encoder connect, scheduling, and record-to-VOD replays ([docs](docs/live-streaming.md)) |
 | 🌈 **HDR + SDR dual codec** | HEVC/Main10 (`master_hevc.m3u8`) for HDR-capable browsers, H.264 for everyone else |
 | 🧠 **Capability-based selection** | Player uses `navigator.mediaCapabilities` to pick a codec it can *actually* decode |
 | 🩹 **Self-healing** | Worker startup reconciler recovers jobs whose queue message was lost on restart |
