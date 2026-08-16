@@ -45,6 +45,46 @@ class Settings(BaseSettings):
     # Origin / playback
     origin_port: int = Field(default=8080, alias="ORIGIN_PORT")
 
+    # --- Live streaming --------------------------------------------------
+    # Gate that lets the upload API accept/route live-event requests. The live
+    # ingest (MediaMTX) + packager services are only up under the compose stack;
+    # keep this on so the admin surface works, off to hide the feature entirely.
+    live_enabled: bool = Field(default=True, alias="LIVE_ENABLED")
+    live_events_table: str = Field(
+        default="streamsre-live-events", alias="LIVE_EVENTS_TABLE"
+    )
+    # The live packager control plane (spawns/kills the live ffmpeg per channel).
+    live_packager_url: str = Field(
+        default="http://live-packager:8000", alias="LIVE_PACKAGER_URL"
+    )
+    # Host:port shown to an admin so their encoder can push in. Local by default;
+    # NEVER routed through the public read-only tunnel (ingest is a write path).
+    live_ingest_rtmp_host: str = Field(
+        default="localhost:1935", alias="LIVE_INGEST_RTMP_HOST"
+    )
+    live_ingest_srt_host: str = Field(
+        default="localhost:8890", alias="LIVE_INGEST_SRT_HOST"
+    )
+    live_ingest_whip_base: str = Field(
+        default="http://localhost:8889", alias="LIVE_INGEST_WHIP_BASE"
+    )
+    # Ingest server (MediaMTX) control API, as seen on the compose network. The
+    # scheduler polls it to detect when an encoder connects/disconnects.
+    live_ingest_api_host: str = Field(
+        default="live-ingest:9997", alias="LIVE_INGEST_API_HOST"
+    )
+    # Lifecycle reconciler: auto go-live on encoder connect, auto-end on
+    # disconnect (after the grace window), and scheduled start/stop.
+    live_scheduler_enabled: bool = Field(default=True, alias="LIVE_SCHEDULER_ENABLED")
+    live_poll_interval_seconds: float = Field(
+        default=3.0, alias="LIVE_POLL_INTERVAL_SECONDS"
+    )
+    # How long an ingest channel may stay "live" after the encoder drops before we
+    # end it — absorbs brief encoder reconnects without flapping the channel.
+    live_ingest_grace_seconds: float = Field(
+        default=20.0, alias="LIVE_INGEST_GRACE_SECONDS"
+    )
+
     # --- I/O Framer (frame interpolation) — Phase 0 plumbing, OFF by default ---
     # Frames in, interpolated frames out. RIFE (intermediate-flow) FPS boost via
     # Vulkan, run as a sidecar. These flags gate whether the upload API will even

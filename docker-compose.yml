@@ -149,6 +149,58 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # --- Live ingest (MediaMTX): RTMP / SRT / WHIP push server ---
+  # A real encoder (OBS/SRT/browser) pushes here; MediaMTX authorizes the publish
+  # against the upload API (stream key) and republishes it internally for the
+  # packager to pull. INGEST IS A WRITE PATH — its ports are host/admin-only and
+  # are intentionally NOT part of the public `tunnel` profile.
+  live-ingest:
+    build:
+      context: ./services/live-ingest
+      dockerfile: Dockerfile
+    container_name: streamsre-live-ingest
+    depends_on:
+      - upload-api        # publish auth is validated by the upload API
+    ports:
+      - "1935:1935"       # RTMP push (OBS)
+      - "8890:8890/udp"   # SRT push
+      - "8889:8889"       # WebRTC / WHIP push (browser go-live)
+    restart: unless-stopped
+
+  # --- Live packager (ffmpeg): live source -> rolling HLS ladder ---
+  # Owns the per-channel live ffmpeg. Re-streams an uploaded title (playout) or
+  # pulls the encoder feed from live-ingest, and writes a rolling HLS window to
+  # the shared live_segments volume that the origin serves at /live/.
+  live-packager:
+    build:
+      context: ./services/live-packager
+      dockerfile: Dockerfile
+    container_name: streamsre-live-packager
+    env_file: .env
+    environment:
+      <<: *aws-local
+      USE_NVENC: ${USE_NVENC:-0}
+      LIVE_INGEST_INTERNAL_HOST: live-ingest:1935
+      LIVE_INGEST_API_HOST: live-ingest:9997
+    depends_on:
+      <<: *storage-deps
+      live-ingest:
+        condition: service_started
+    volumes:
+      - live_segments:/live_segments
+    ports:
+      - "8091:8000"       # host access to /healthz, /metrics, /status
+    # --- GPU (opt-in): uncomment + set USE_NVENC=1 for hardware live encode.
+    # Live ABR is realtime-critical; NVENC frees the CPU. On WSL2 NVENC binds
+    # (unlike the io-framer Vulkan path). On a non-GPU host, leave this commented. ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
   # --- Origin (Nginx) ---
   origin:
     build:
@@ -159,6 +211,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on: *storage-deps
+    volumes:
+      # Live HLS written by the packager, served read-only at /live/.
+      - live_segments:/live-origin:ro
     ports:
       - "8080:8080"
 
@@ -281,3 +336,4 @@ volumes:
   grafana_data:
   minio_data:   # persistent S3 objects (raw uploads + HLS segments)
   dynamo_data:  # persistent movie catalog (DynamoDB)
+  live_segments:  # rolling live HLS window (packager writes, origin serves)

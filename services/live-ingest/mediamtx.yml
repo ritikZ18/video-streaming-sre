@@ -1,0 +1,47 @@
+###############################################################################
+# MediaMTX — StreamSRE live ingest server.
+#
+# Accepts a live encoder push over RTMP / SRT / WHIP and republishes it on one
+# internal path (live/<stream_key>) that the live-packager pulls as RTMP. We do
+# NOT serve playback from here — the packager writes HLS to the origin, so this
+# service is ingest-only and stays on the internal/admin network (never tunneled).
+###############################################################################
+
+logLevel: info
+readTimeout: 10s
+writeTimeout: 10s
+
+# Control + metrics APIs (internal only). The packager queries the API to check
+# whether an encoder is connected before it pulls; Prometheus scrapes metrics.
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+
+# --- ingest protocols ---
+rtmp: yes
+rtmpAddress: :1935
+srt: yes
+srtAddress: :8890
+webrtc: yes
+webrtcAddress: :8889
+
+# We don't use MediaMTX as a playback egress (our origin serves HLS), so turn the
+# egress-only servers off to keep the surface small.
+hls: no
+rtsp: no
+
+# Authorize PUBLISHING via the upload API (validates the stream key against the
+# live-event table). Reads/api/metrics stay open on the internal compose network
+# so the packager can pull and Prometheus can scrape.
+authMethod: http
+authHTTPAddress: http://upload-api:8000/api/v1/live/mediamtx-auth
+authHTTPExclude:
+  - action: read
+  - action: playback
+  - action: api
+  - action: metrics
+  - action: pprof
+
+paths:
+  all_others:
