@@ -9,6 +9,7 @@ import { UploadQueue } from "../../components/upload/UploadQueue";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
 import { AdminCatalog } from "../../components/admin/AdminCatalog";
 import { AdminObservability } from "../../components/admin/AdminObservability";
+import { AdminLive } from "../../components/admin/AdminLive";
 import { adminLogin } from "../../lib/api";
 import { VIEWER_ONLY } from "../../lib/backend";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
@@ -135,7 +136,7 @@ function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-type Tab = "studio" | "observability";
+type Tab = "studio" | "live" | "observability";
 
 function AdminPanel({ onLogout }: { onLogout: () => void }) {
   const [files, setFiles] = useState<File[]>([]);
@@ -152,6 +153,7 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "studio", label: "Studio" },
+    { key: "live", label: "Live" },
     { key: "observability", label: "Observability" },
   ];
 
@@ -202,6 +204,8 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
             <AdminCatalog />
           </div>
         </>
+      ) : tab === "live" ? (
+        <AdminLive />
       ) : (
         <AdminObservability />
       )}

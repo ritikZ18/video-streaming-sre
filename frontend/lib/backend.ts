@@ -70,15 +70,16 @@ export function beaconUrl(): string {
 }
 
 /** Playback assets are stored absolute against the transcode-time origin
- *  (e.g. http://localhost:8080/hls/<id>/master.m3u8). When a runtime backend
- *  base is set, swap the host so the media loads through the tunnel gateway.
- *  Only /hls/ paths are origin-served; external art (e.g. TMDB) is left as-is. */
+ *  (e.g. http://localhost:8080/hls/<id>/master.m3u8, or /live/<id>/master.m3u8
+ *  for a live channel). When a runtime backend base is set, swap the host so the
+ *  media loads through the tunnel gateway. Only origin-served paths (/hls/,
+ *  /live/) are rewritten; external art (e.g. TMDB) is left as-is. */
 export function rewriteOriginUrl<T extends string | null | undefined>(url: T): T {
   const base = backendBase();
   if (!url || !base) return url;
   try {
     const u = new URL(url, base);
-    if (u.pathname.startsWith("/hls/")) {
+    if (u.pathname.startsWith("/hls/") || u.pathname.startsWith("/live/")) {
       return (normalize(base) + u.pathname + u.search) as T;
     }
   } catch {

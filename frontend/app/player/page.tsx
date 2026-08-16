@@ -5,6 +5,7 @@ import { ChevronLeft, Loader2 } from "lucide-react";
 import { Navbar } from "../../components/layout/Navbar";
 import { VideoPlayer } from "../../components/player/VideoPlayer";
 import { getMovie } from "../../lib/api";
+import { getLiveEvent } from "../../lib/live";
 import type { MediaInfo, SubtitleTrack } from "../../lib/types";
 
 /** Whether THIS browser can actually decode 10-bit HDR HEVC smoothly — not just
@@ -41,9 +42,11 @@ export default function PlayerPage() {
     storyboard: string | null;
     interpUrl: string | null;
     interpFps: number | null;
+    isLive: boolean;
+    audioOnly: boolean;
   }>({
     url: null, title: null, poster: null, id: null,
-    storyboard: null, interpUrl: null, interpFps: null,
+    storyboard: null, interpUrl: null, interpFps: null, isLive: false, audioOnly: false,
   });
   const [subs, setSubs] = useState<SubtitleTrack[]>([]);
   const [media, setMedia] = useState<MediaInfo | null>(null);
@@ -53,7 +56,33 @@ export default function PlayerPage() {
     if (typeof window === "undefined") return;
     const q = new URLSearchParams(window.location.search);
     const id = q.get("id");
+    const liveId = q.get("live");
     const urlParam = q.get("url"); // legacy / seed fallback
+
+    // Live channel: resolve the manifest from the live-events API and play it in
+    // the player's live mode (LIVE badge, no seek bar, jump-to-live).
+    if (liveId) {
+      setLoading(true);
+      void getLiveEvent(liveId)
+        .then((ev) => {
+          if (ev && ev.manifestUrl) {
+            setP({
+              url: ev.manifestUrl,
+              title: ev.title,
+              poster: ev.backdropUrl ?? ev.posterUrl ?? null,
+              id: ev.id,
+              storyboard: null,
+              interpUrl: null,
+              interpFps: null,
+              isLive: true,
+              audioOnly: ev.audioOnly,
+            });
+          }
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+
     setP((prev) => ({
       ...prev,
       url: urlParam,
@@ -125,6 +154,8 @@ export default function PlayerPage() {
               interpSrc={p.interpUrl}
               interpFps={p.interpFps}
               mediaInfo={media}
+              isLive={p.isLive}
+              audioOnly={p.audioOnly}
             />
           )}
         </div>

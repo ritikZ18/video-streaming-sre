@@ -10,6 +10,7 @@ import { Navbar } from "../../components/layout/Navbar";
 import { Footer } from "../../components/layout/Footer";
 import { MovieCard } from "../../components/movie/MovieCard";
 import { MovieDetail } from "../../components/movie/MovieDetail";
+import { LiveRail } from "../../components/live/LiveRail";
 
 const GENRES = ["All", "Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
 
@@ -76,6 +77,7 @@ export default function BrowsePage() {
     <div className="min-h-screen text-white">
       <Navbar />
       <main className="px-8 pt-24 pb-16">
+        <LiveRail className="pb-6" />
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-heading">Browse</h1>

@@ -109,3 +109,29 @@ export type Movie = {
   /** Live audio/subtitle extraction checklist (populated while processing). */
   extractTasks?: ExtractTask[];
 };
+
+// --- Live streaming ---
+export type LiveState =
+  | "idle"
+  | "scheduled"
+  | "starting"
+  | "live"
+  | "ended"
+  | "error";
+
+/** A live channel as a viewer sees it (sanitized — no stream key / ingest URL). */
+export type LiveEvent = {
+  id: string;
+  title: string;
+  description?: string | null;
+  sourceType: "ingest" | "playout";
+  state: LiveState;
+  audioOnly: boolean;
+  /** Live HLS master ({origin}/live/<id>/master.m3u8); host-rewritten for tunnel. */
+  manifestUrl?: string | null;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+  startedAt?: string | null;
+  posterUrl?: string | null;
+  backdropUrl?: string | null;
+};

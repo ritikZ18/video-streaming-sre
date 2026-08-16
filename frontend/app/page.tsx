@@ -11,6 +11,7 @@ import { Footer } from "../components/layout/Footer";
 import { HeroCarousel } from "../components/movie/HeroCarousel";
 import { ScrollRow } from "../components/movie/ScrollRow";
 import { MovieDetail } from "../components/movie/MovieDetail";
+import { LiveRail } from "../components/live/LiveRail";
 
 const GENRES = ["Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
 
@@ -86,6 +87,7 @@ export default function HomePage() {
       <Navbar />
       <main className="relative z-0">
         <HeroCarousel movies={featured} onMoreInfo={setSelectedMovie} onPlay={playMovie} />
+        <LiveRail />
         <section className="px-8 pb-16 pt-3">
           {dedupedUploads.length > 0 && (
             <ScrollRow

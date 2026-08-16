@@ -21,6 +21,7 @@ import {
   Sparkles,
   ListChecks,
   Check,
+  Music,
 } from "lucide-react";
 import { sendBeacon, type BeaconEvent } from "../../lib/api";
 import type { MediaInfo, SubtitleTrack } from "../../lib/types";
@@ -39,6 +40,12 @@ type VideoPlayerProps = {
   interpFps?: number | null;
   /** Full source track list (VLC-style) for the Tracks panel. */
   mediaInfo?: MediaInfo | null;
+  /** True when `src` is a live channel: swaps the seek bar for a LIVE badge +
+   *  jump-to-live and drops the VOD duration/scrubber UI. */
+  isLive?: boolean;
+  /** Audio-only channel ("song" streaming): shows a now-playing card instead of
+   *  the (empty) video surface. Audio still plays through the same element. */
+  audioOnly?: boolean;
 };
 
 type Level = { index: number; height: number };
@@ -124,6 +131,8 @@ export function VideoPlayer({
   interpSrc,
   interpFps,
   mediaInfo,
+  isLive = false,
+  audioOnly = false,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -217,7 +226,14 @@ export function VideoPlayer({
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = activeSrc;
     } else if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 60 });
+      // Live channels sync tightly to the playlist's live edge (lower glass-to-
+      // glass latency); VOD keeps the standard buffering. A short back-buffer on
+      // live keeps memory bounded during long streams.
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: isLive,
+        backBufferLength: isLive ? 30 : 60,
+      });
       hlsRef.current = hls;
       hls.loadSource(activeSrc);
       hls.attachMedia(video);
@@ -266,7 +282,7 @@ export function VideoPlayer({
       if (hls) hls.destroy();
       hlsRef.current = null;
     };
-  }, [activeSrc, flush, pushEvent]);
+  }, [activeSrc, flush, pushEvent, isLive]);
 
   // ---- <video> events ----
   useEffect(() => {
@@ -588,6 +604,20 @@ export function VideoPlayer({
     else void el.requestFullscreen();
   }, []);
 
+  // Jump to the live edge (the end of the seekable window) and resume — for a
+  // live channel there's no fixed duration, so this is the "catch up to now".
+  const jumpToLive = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      const sk = v.seekable;
+      if (sk.length) v.currentTime = sk.end(sk.length - 1);
+    } catch {
+      /* seekable range not ready yet */
+    }
+    void v.play();
+  }, []);
+
   // Flash a transient center HUD (volume %, ±10s, mute) so keyboard shortcuts
   // are discoverable and feel responsive. Bumping id re-triggers the animation
   // even when the same action repeats.
@@ -763,6 +793,37 @@ export function VideoPlayer({
         ))}
       </video>
 
+      {/* Audio-only ("song") now-playing card: the video surface is empty, so we
+          cover it with the title + art + a playing indicator. Audio still comes
+          from the <video> element behind this (pointer-events-none passes clicks). */}
+      {audioOnly && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-5 bg-gradient-to-b from-zinc-900 to-black">
+          {poster ? (
+            <div
+              className="h-40 w-40 rounded-2xl bg-cover bg-center shadow-2xl ring-1 ring-white/10"
+              style={{ backgroundImage: `url("${poster}")` }}
+            />
+          ) : (
+            <div className="flex h-40 w-40 items-center justify-center rounded-2xl bg-white/5 ring-1 ring-white/10">
+              <Music className="h-16 w-16 text-white/40" />
+            </div>
+          )}
+          <div className="text-center">
+            <p className="text-lg font-bold text-white">{title ?? "Live audio"}</p>
+            <p className="text-xs uppercase tracking-wide text-white/50">Audio stream</p>
+          </div>
+          <div className="flex h-8 items-end gap-1">
+            {[16, 28, 20, 32, 24, 30, 18].map((h, i) => (
+              <span
+                key={i}
+                className={`w-1.5 rounded-full bg-red-500 ${playing ? "motion-safe:animate-pulse" : "opacity-40"}`}
+                style={{ height: h, animationDelay: `${i * 0.12}s` }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Spinner: ONLY while genuinely buffering / stalled (debounced ~250ms so
           brief rebuffers don't flash it on and off). */}
       {!error && showSpinner && (
@@ -825,9 +886,15 @@ export function VideoPlayer({
         </div>
       )}
 
-      {title && (showControls || !playing) && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent p-4">
-          <h2 className="text-sm font-bold tracking-tight text-white">{title}</h2>
+      {(title || isLive) && (showControls || !playing || isLive) && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center gap-2 bg-gradient-to-b from-black/70 to-transparent p-4">
+          {isLive && (
+            <span className="inline-flex items-center gap-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white">
+              <span className="h-1.5 w-1.5 rounded-full bg-white motion-safe:animate-pulse" />
+              Live
+            </span>
+          )}
+          {title && <h2 className="text-sm font-bold tracking-tight text-white">{title}</h2>}
         </div>
       )}
 
@@ -1008,7 +1075,7 @@ export function VideoPlayer({
         className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8"
       >
         <div
-          className="relative mb-1.5 h-1.5"
+          className={`relative mb-1.5 h-1.5 ${isLive ? "hidden" : ""}`}
           onMouseMove={(e) => {
             if (!duration) return;
             const rect = e.currentTarget.getBoundingClientRect();
@@ -1081,7 +1148,19 @@ export function VideoPlayer({
               className="h-1 w-20 cursor-pointer accent-white" aria-label="Volume"
             />
           </div>
-          <span className="text-xs tabular-nums text-white/80">{fmt(current)} / {fmt(duration)}</span>
+          {isLive ? (
+            <button
+              type="button"
+              onClick={jumpToLive}
+              title="Jump to the live edge"
+              className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wide text-white/80 hover:bg-white/15"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-red-500 motion-safe:animate-pulse" />
+              Live
+            </button>
+          ) : (
+            <span className="text-xs tabular-nums text-white/80">{fmt(current)} / {fmt(duration)}</span>
+          )}
 
           <div className="ml-auto flex items-center gap-1">
             {/* Audio / language — shown whenever there's at least one track (VLC-style). */}
