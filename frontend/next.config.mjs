@@ -2,9 +2,10 @@
 const nextConfig = {
   reactStrictMode: true,
   // STATIC_EXPORT=1 (the Render viewer build) emits a fully static site to ./out
-  // — no Node server, deployable as a Render Static Site. Unset locally, so
-  // `next start` / the Docker image keep the dynamic build (incl. the admin-only
-  // TMDB proxy route, which the static build stubs out — see app/api/tmdb).
+  // — no Node server, deployable as a Render Static Site. Unset locally so
+  // `next start` / the Docker image keep the standard build. TMDB now proxies
+  // through the backend (upload-api /api/v1/tmdb), so there are no server routes
+  // to exclude — the Render build command no longer needs `rm -rf app/api`.
   output: process.env.STATIC_EXPORT === "1" ? "export" : undefined,
   env: {
     NEXT_PUBLIC_API_URL: process.env.VITE_API_URL || "http://localhost:8000",

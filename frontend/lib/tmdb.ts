@@ -1,10 +1,11 @@
 // TMDB catalog source — real posters + metadata for a rich browse experience.
 // These titles are DISPLAY-ONLY (no playable HLS); only uploaded videos play.
-// All requests go through our own server proxy (/api/tmdb/...) so the API key
-// stays server-side. If TMDB isn't configured the proxy returns 503 and this
-// module yields [] — the app falls back to the local seed catalog + uploads.
+// Requests go through the BACKEND proxy (upload-api /api/v1/tmdb/...), resolved
+// at runtime so the static viewer reaches it through the tunnel gateway — the
+// API key stays server-side. If TMDB isn't configured the proxy returns 503 and
+// this module yields [] — the app falls back to the seed catalog + uploads.
 import type { Genre, Movie } from "./types";
-import { gradientFor } from "./api";
+import { gradientFor, apiUrl } from "./api";
 
 const img = (path: string | null | undefined, size: string): string | null =>
   path ? `https://image.tmdb.org/t/p/${size}${path}` : null;
@@ -61,7 +62,9 @@ function toMovie(m: TmdbMovie): Movie | null {
 
 async function fetchPage(p: number): Promise<TmdbMovie[]> {
   try {
-    const res = await fetch(`/api/tmdb/movie/popular?page=${p}`, { cache: "force-cache" });
+    const res = await fetch(`${apiUrl()}/api/v1/tmdb/movie/popular?page=${p}`, {
+      cache: "force-cache",
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as { results?: TmdbMovie[] };
     return data.results ?? [];
