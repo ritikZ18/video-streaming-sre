@@ -187,6 +187,24 @@ fi
 log "Building & starting services (docker compose)"
 docker compose $COMPOSE_ARGS up -d --build
 
+wait_for_http() {
+  local name="$1"
+  local url="$2"
+  log "Waiting for ${name}"
+  for _ in $(seq 1 60); do
+    if curl -fsS -m 3 -o /dev/null "$url"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: ${name} did not become ready at ${url}." >&2
+  docker compose ps >&2
+  exit 1
+}
+
+wait_for_http "upload API" "http://127.0.0.1:8000/ready"
+wait_for_http "frontend" "http://127.0.0.1:3001/"
+
 # 4) Optional demo seed ------------------------------------------------------
 if [ "${1:-}" = "--seed" ]; then
   log "Seeding a generated demo video (waiting for the API to be ready)"
