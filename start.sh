@@ -13,6 +13,7 @@
 #   ./start.sh --tunnel          # publish the backend via a Cloudflare quick tunnel,
 #                                # verify it serves, and print the ?api= viewer link
 #                                # (set VIEWER_URL to your Render frontend URL)
+#   ./start.sh --help            # show this help and exit
 #
 set -euo pipefail
 
@@ -20,6 +21,30 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  cat <<'EOF'
+StreamSRE startup
+
+Usage:
+  ./start.sh                  Start storage, services, and observability.
+  ./start.sh --seed           Start the stack and seed a demo video.
+  ./start.sh --queue-clear    Remove orphaned transcode jobs.
+  ./start.sh --queue-clear all
+                              Remove every queued transcode job.
+  ./start.sh --tunnel         Start the optional Cloudflare quick tunnel.
+  ./start.sh --help           Show this help.
+
+Environment:
+  Configure .env from .env.example before starting. Admin, Grafana, and
+  public relay credentials must not use the example placeholders.
+
+Common relay commands:
+  docker compose -f docker-compose.yml -f docker-compose.relay.yml \
+    --profile relay up -d --build
+EOF
+  exit 0
+fi
 
 # 0) Queue maintenance -------------------------------------------------------
 # The durable job queue (DynamoDB) can hold "orphan" jobs whose catalog row was
