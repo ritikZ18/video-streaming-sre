@@ -3,7 +3,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft,
   CalendarClock,
   Check,
   ChevronDown,
@@ -17,7 +16,6 @@ import {
   LockKeyhole,
   MessageCircle,
   MicOff,
-  MonitorPlay,
   Play,
   Radio,
   Send,
