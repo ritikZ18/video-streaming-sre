@@ -1,12 +1,13 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Lock, Play } from "lucide-react";
+import { Lock, Play, Users } from "lucide-react";
 import { SearchBar } from "../common/SearchBar";
 
 const NAV_ITEMS = [
   { label: "Home", href: "/" },
   { label: "Browse", href: "/browse" },
+  { label: "Watch Party", href: "/party" },
   { label: "SRE", href: "/sre" },
 ] as const;
 
@@ -15,8 +16,8 @@ export function Navbar() {
   const router = useRouter();
 
   return (
-    <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between border-b border-white/10 bg-black/40 px-8 py-4 backdrop-blur-xl backdrop-saturate-150 transition-colors">
-      <div className="flex items-center gap-8">
+    <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between gap-3 border-b border-white/10 bg-black/60 px-4 py-4 backdrop-blur-xl backdrop-saturate-150 transition-colors md:px-8">
+      <div className="flex min-w-0 items-center gap-3 md:gap-8">
         <button
           type="button"
           className="flex items-center gap-2 text-lg font-extrabold tracking-tight"
@@ -27,7 +28,7 @@ export function Navbar() {
           </span>
           <span>StreamSRE</span>
         </button>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           {NAV_ITEMS.map((item) => {
             const active = pathname === item.href;
             return (
@@ -48,7 +49,7 @@ export function Navbar() {
           })}
         </div>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="hidden items-center gap-3 sm:flex">
         <SearchBar />
         <button
           type="button"
