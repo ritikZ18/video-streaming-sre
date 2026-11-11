@@ -164,21 +164,29 @@ def ingest_artifact(
         raise HTTPException(status_code=400, detail="Artifact bundle is incomplete")
 
     client = _client()
-    prefix = f"relay/{manifest.movie_id}/"
+    staging_prefix = f"relay-staging/{manifest.movie_id}/"
+    public_prefix = f"relay/{manifest.movie_id}/"
     try:
         _ensure_bucket(client)
         for item, staged_file in staged:
             client.upload_fileobj(
                 staged_file,
                 settings.relay_bucket,
-                prefix + item.path,
+                staging_prefix + item.path,
                 ExtraArgs={"ContentType": item.content_type},
             )
             staged_file.close()
+        for item in manifest.objects:
+            client.copy_object(
+                Bucket=settings.relay_bucket,
+                CopySource={"Bucket": settings.relay_bucket, "Key": staging_prefix + item.path},
+                Key=public_prefix + item.path,
+                MetadataDirective="COPY",
+            )
         marker = manifest.model_dump_json().encode()
         client.put_object(
             Bucket=settings.relay_bucket,
-            Key=prefix + "ready.json",
+            Key=public_prefix + "ready.json",
             Body=marker,
             ContentType="application/json",
         )

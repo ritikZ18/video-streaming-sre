@@ -549,7 +549,8 @@ video-streaming-sre/
 
 Laptop B setup and Laptop A artifact transfer are documented in
 [`docs/deployment-modes.md`](docs/deployment-modes.md). The relay receives only
-completed HLS/CMAF output; all codec work remains on Laptop A.
+completed HLS/CMAF output; all codec work remains on Laptop A. Both machines
+should use the `feat/watch-party-relay` branch during this implementation phase.
 
 Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/transcode-pipeline.md`](docs/transcode-pipeline.md) ·

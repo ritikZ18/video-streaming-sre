@@ -245,10 +245,54 @@ be generated with at least 32 random bytes, for example:
 openssl rand -hex 32
 ```
 
-This phase publishes a `ready.json` marker after validation and storage. Public
-catalog registration, room scheduling, and HLS URL mapping are later phases.
+The ingress first writes to `relay-staging/<movie_id>/`. It copies objects to
+the public `relay/<movie_id>/` prefix only after all checksums pass, then writes
+`ready.json`. This prevents viewers from reading a partially transferred
+bundle. A verified HLS master is available through the relay gateway as:
+
+```text
+https://<relay-host>/relay/<movie_id>/master.m3u8
+```
+
+Public catalog registration and room scheduling are later phases.
 
 ## Laptop B Setup
+
+### Branch and software
+
+Laptop B must use the same implementation branch as Laptop A. After pushing the
+branch from the development machine, run:
+
+```bash
+git clone https://github.com/ritikZ18/video-streaming-sre.git
+cd video-streaming-sre
+git switch --track origin/feat/watch-party-relay
+```
+
+If the branch is not pushed yet, transfer the repository or a Git bundle from
+Laptop A first; do not silently use `main` for the relay.
+
+Install only the relay host prerequisites:
+
+- Ubuntu Server 24.04 LTS or another supported Linux host;
+- Docker Engine;
+- Docker Compose v2 plugin;
+- Git, `curl`, and `openssl`;
+- a persistent SSD location for Docker volumes and relay media;
+- wired Ethernet where possible.
+
+Do **not** install FFmpeg, ffprobe, NVIDIA drivers, CUDA, or a codec toolchain
+on Laptop B. Laptop A owns all source decoding, encoding, and packaging.
+
+Check the installation before starting:
+
+```bash
+docker version
+docker compose version
+git --version
+curl --version
+openssl version
+```
 
 Run these steps on Laptop B. Keep the token in a protected `.env` file and do
 not paste it into chat or commit it:
@@ -280,6 +324,19 @@ For a separate private network between the laptops, bind `RELAY_BIND_ADDRESS`
 to Laptop B's private interface address and allow only Laptop A's IP at the host
 firewall. Do not expose port `8010` to the public internet without an
 authenticated HTTPS reverse proxy.
+
+Recommended host firewall policy on Laptop B:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw allow from <laptop-a-private-ip> to any port 8010 proto tcp
+sudo ufw allow from <trusted-admin-ip> to any port 22 proto tcp
+sudo ufw enable
+```
+
+If guests will connect directly to Laptop B for playback, expose only the
+gateway's HTTPS port through a separately configured reverse proxy or router.
+Keep port `8010` restricted to Laptop A.
 
 ## Laptop A Transfer
 
