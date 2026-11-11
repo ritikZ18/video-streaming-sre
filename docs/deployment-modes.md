@@ -247,3 +247,59 @@ openssl rand -hex 32
 
 This phase publishes a `ready.json` marker after validation and storage. Public
 catalog registration, room scheduling, and HLS URL mapping are later phases.
+
+## Laptop B Setup
+
+Run these steps on Laptop B. Keep the token in a protected `.env` file and do
+not paste it into chat or commit it:
+
+```bash
+git clone <repository-url>
+cd video-streaming-sre
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Set the generated value in `.env`:
+
+```text
+RELAY_INGRESS_TOKEN=<generated-value>
+RELAY_BIND_ADDRESS=127.0.0.1
+```
+
+Set the required admin and Grafana passwords too, then start the relay profile:
+
+```bash
+./start.sh
+docker compose -f docker-compose.yml -f docker-compose.relay.yml \
+  --profile relay up -d --build
+curl http://127.0.0.1:8010/health
+```
+
+For a separate private network between the laptops, bind `RELAY_BIND_ADDRESS`
+to Laptop B's private interface address and allow only Laptop A's IP at the host
+firewall. Do not expose port `8010` to the public internet without an
+authenticated HTTPS reverse proxy.
+
+## Laptop A Transfer
+
+On Laptop A, stage the already-packaged HLS/CMAF directory from the existing
+segments bucket. The directory must contain manifests and media segments, not a
+source movie. Then create and upload the bundle:
+
+```bash
+python3 scripts/export-relay-artifact.py \
+  movie-a81f2 ./relay-staging/movie-a81f2 relay-out/movie-a81f2.tar.gz \
+  --duration-seconds 7200 \
+  --expires-at 2026-11-15T01:00:00Z
+
+scripts/upload-relay-artifact.sh \
+  http://<laptop-b-private-ip>:8010 \
+  relay-out/movie-a81f2.tar.gz \
+  "$RELAY_INGRESS_TOKEN"
+```
+
+The upload response must report `"status":"ready"`. Laptop B writes the
+objects under `relay/<movie_id>/` and only then creates `ready.json`. The
+publisher can shut down after this response; public watch-party registration
+and playback routing will be added in the next phase.

@@ -547,6 +547,10 @@ video-streaming-sre/
 └── start.sh · stop.sh · Makefile
 ```
 
+Laptop B setup and Laptop A artifact transfer are documented in
+[`docs/deployment-modes.md`](docs/deployment-modes.md). The relay receives only
+completed HLS/CMAF output; all codec work remains on Laptop A.
+
 Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/transcode-pipeline.md`](docs/transcode-pipeline.md) ·
 [`docs/design.md`](docs/design.md) ·
