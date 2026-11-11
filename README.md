@@ -109,7 +109,7 @@ flowchart LR
     subgraph Storage["Durable state"]
       MI["MinIO<br/>S3 objects"]
       DB["DynamoDB-local<br/>catalog"]
-      SQS["floci SQS<br/>job queue (ephemeral)"]
+      SQS["DynamoDB-local<br/>durable job queue"]
     end
 
     subgraph Obs["Observability"]
@@ -153,8 +153,7 @@ segments; the player streams them adaptively and reports how well it went.
 | **Origin** | `streamsre-origin` | `8080` | nginx: serve/cache manifests & segments, CORS + cache policy |
 | **Beacon collector** | `streamsre-beacon-collector` | `8001` | Ingest QoE telemetry from the player |
 | **MinIO** | `streamsre-minio` | `9000` / `9001` | S3-compatible object storage + web console |
-| **DynamoDB-local** | `streamsre-dynamodb` | *(internal `8000`)* | Movie catalog (metadata + job status) |
-| **floci** | *(own stack)* | `4566` | Local AWS emulator — used here **only for SQS** |
+| **DynamoDB-local** | `streamsre-dynamodb` | *(internal `8000`)* | Movie catalog, metadata, job status, and durable queue |
 | **Prometheus** | `streamsre-prometheus` | `9090` | Metrics scraping + recording/alert rules |
 | **Grafana** | `streamsre-grafana` | `3000` | Dashboards (origin, transcode, QoE, SLOs) |
 | **Alertmanager** | `streamsre-alertmanager` | `9093` | Routes burn-rate alerts |
@@ -170,7 +169,7 @@ sequenceDiagram
     participant FE as Frontend
     participant UA as upload-api
     participant S3 as MinIO
-    participant Q as SQS (floci)
+    participant Q as DynamoDB queue
     participant W as transcode-worker
     participant DB as DynamoDB
     participant OR as origin
@@ -204,18 +203,17 @@ sequenceDiagram
 
 ## 6. Storage & durability model
 
-A deliberate split — **the data that must survive a restart is persistent; only the queue is ephemeral.**
+A deliberate split — **catalog, media, and queue state survive a restart through Docker volumes.**
 
 | Store | Backing | Persistent? | Holds |
 |---|---|:--:|---|
 | **Object storage** | MinIO (`minio_data` volume) | ✅ | raw uploads + HLS/DASH segments + custom artwork |
 | **Catalog** | DynamoDB-local (`dynamo_data` volume) | ✅ | title metadata, visibility, job status, manifest URLs, `media_info` |
-| **Job queue** | floci SQS | ❌ (in-memory) | transcode job messages |
+| **Job queue** | DynamoDB-local (`dynamo_data` volume) | ✅ | durable transcode job messages |
 
-Because the queue is the *only* ephemeral piece, a restart mid-transcode can strand a catalog row
-in `processing` with its job message gone. Rather than fight that, the worker **reconciles on
-startup** (see [§12](#12-admin-studio--self-healing)) — the durable stores are the source of truth,
-and the queue is treated as a disposable cache of pending work.
+The worker still reconciles on startup (see [§12](#12-admin-studio--self-healing)) so interrupted
+jobs can be recovered. The queue is durable, while the catalog and object store remain the source
+of truth for completed media.
 
 > Two buckets: `streamsre-raw-uploads` (sources) and `streamsre-hls-segments` (packaged output + posters).
 > Browse them live in the MinIO console at `http://localhost:9001`.
