@@ -496,7 +496,7 @@ buckets/tables are created automatically on `up` — **no Terraform apply is nee
 
 ```bash
 ./start.sh            # bring up the whole stack   (--seed pushes a demo clip)
-./stop.sh             # stop services              (./stop.sh --all also stops floci)
+./stop.sh             # stop services
 ```
 
 **Or with the Makefile / compose directly:**
@@ -511,10 +511,10 @@ bash scripts/seed-test-video.sh   # push a test clip through the pipeline
 Then:
 
 - **Browse & watch** — `http://localhost:3001`
-- **Admin studio** — `http://localhost:3001/admin` (default `admin`/`admin`). Uploads transcode to
+- **Admin studio** — `http://localhost:3001/admin` (credentials configured in `.env`). Uploads transcode to
   HLS+DASH and appear on the grid within a few seconds (it auto-refreshes).
 - **Play directly** — `http://localhost:8080/hls/<job>/master.m3u8` (HLS) or `.../manifest.mpd` (DASH)
-- **Objects** — MinIO console `http://localhost:9001`
+- **Objects** — MinIO console `http://localhost:9001` (loopback only)
 - **Metrics & alerts** — Grafana `http://localhost:3000`, Prometheus `http://localhost:9090`
 - **Chaos** — scripts in `chaos/` kill origin / inject latency; watch burn-rate alerts fire
 
@@ -538,7 +538,7 @@ video-streaming-sre/
 │   ├── origin/              # nginx origin: serve/cache manifests + segments
 │   └── beacon-collector/    # QoE telemetry ingest
 ├── frontend/                # Next.js 15 player UI + admin studio (hls.js)
-├── infra/terraform/         # IaC for cloud S3/SQS (reference; not run for local dev)
+├── infra/terraform/         # Optional IaC reference for AWS-compatible deployments
 ├── observability/           # Prometheus, Grafana, Alertmanager configs + dashboards
 ├── slo/ · runbooks/ · chaos/  # SRE artifacts
 ├── security/                # image + secret scanning

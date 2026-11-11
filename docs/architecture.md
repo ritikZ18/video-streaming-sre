@@ -1,7 +1,8 @@
 # Architecture — Mini Video Streaming Platform + SRE
 
 This document describes the **system as it is actually built**: the components,
-how a request flows through them, where AWS is emulated locally by **floci**,
+how a request flows through them, where local storage is provided by persistent
+MinIO and DynamoDB containers,
 and where the SRE/observability hooks attach.
 
 For the full narrative design (goals, data model, decisions), see
@@ -20,15 +21,15 @@ flowchart TD
 
     subgraph Services["Docker Compose services"]
       UP["upload-api\n:8000 (FastAPI)"]
-      TW["transcode-worker\n(FFmpeg, SQS consumer)"]
+      TW["transcode-worker\n(FFmpeg, queue consumer)"]
       OG["origin\n:8080 (Nginx)"]
       BC["beacon-collector\n:8001 (FastAPI)"]
     end
 
-    subgraph floci["floci — local AWS emulator (:4566)"]
-      S3RAW[("S3: raw-uploads")]
-      S3SEG[("S3: hls-segments")]
-      SQS[["SQS: transcode-queue (+DLQ)"]]
+    subgraph Storage["Persistent Docker Compose storage"]
+      S3RAW[("MinIO: raw-uploads")]
+      S3SEG[("MinIO: hls-segments")]
+      QUEUE[["DynamoDB: transcode queue"]]
       DDB[("DynamoDB: catalog")]
     end
 
@@ -44,10 +45,10 @@ flowchart TD
     UI -- "HLS/DASH manifests + segments" --> OG
 
     UP -- "raw file" --> S3RAW
-    UP -- "job msg" --> SQS
+    UP -- "job msg" --> QUEUE
     UP -- "movie row (processing)" --> DDB
 
-    SQS --> TW
+    QUEUE --> TW
     TW -- "download raw" --> S3RAW
     TW -- "CMAF + HLS + DASH" --> S3SEG
     TW -- "mark ready + manifest URLs" --> DDB
@@ -69,22 +70,23 @@ flowchart TD
 | Component | Tech | Port(s) | Responsibility |
 |---|---|---|---|
 | **Web player** (`frontend/`) | Next.js 14, React, hls.js, Tailwind | 3001 | Public Apple-TV–style catalog UI + HLS playback + QoE beacons; login-gated `/admin` for uploads |
-| **Upload API** (`services/upload-api`) | Python 3.12, FastAPI | 8000 | Validate + store uploads (S3), enqueue transcode (SQS), own the catalog (DynamoDB), job status; **admin auth on write endpoints** |
-| **Transcode Worker** (`services/transcode-worker`) | Python + FFmpeg | 9100 (metrics) | Consume SQS, one FFmpeg pass → CMAF + HLS + DASH, upload to segments bucket, mark catalog ready |
+| **Upload API** (`services/upload-api`) | Python 3.12, FastAPI | 8000 | Validate + store uploads (S3), enqueue transcode jobs, own the catalog (DynamoDB), job status; **admin auth on write endpoints** |
+| **Transcode Worker** (`services/transcode-worker`) | Python + FFmpeg | 9100 (metrics) | Consume the durable queue, one FFmpeg pass → CMAF + HLS + DASH, upload to segments bucket, mark catalog ready |
 | **Origin** (`services/origin`) | Nginx | 8080, 9113 (metrics) | Proxy + cache manifests/segments from the S3 segments bucket; CDN-edge stand-in |
 | **Beacon Collector** (`services/beacon-collector`) | Python 3.12, FastAPI | 8001 | Ingest player QoE events → Prometheus metrics |
 | **Prometheus** | Prometheus | 9090 | Scrape metrics; evaluate recording + alert rules |
 | **Grafana** | Grafana | 3000 | Dashboards (backend, pipeline, QoE, SLOs) |
 | **Alertmanager** | Alertmanager | 9093 | Route/dedupe alerts |
-| **floci** (external stack) | floci binary | 4566 | Local AWS emulator: S3, SQS, DynamoDB |
+| **MinIO** | S3-compatible object storage | 9000/9001 | Persistent raw uploads and HLS segments |
+| **DynamoDB-local** | Local catalog and queue | 8000 (internal) | Persistent metadata and transcode queue |
 
-**AWS resources (in floci, provisioned by Terraform):**
+**Local resources (created automatically by the services):**
 
 | Resource | Name | Used by |
 |---|---|---|
 | S3 bucket | `streamsre-raw-uploads` | upload-api (write), worker (read) |
 | S3 bucket | `streamsre-hls-segments` | worker (write), origin (read) |
-| SQS queue (+DLQ) | `streamsre-transcode-queue` | upload-api (send), worker (receive) |
+| DynamoDB queue | `streamsre-transcode-queue` | upload-api (send), worker (receive) |
 | DynamoDB table | `streamsre-catalog` | upload-api (CRUD), worker (update status) |
 
 ---
@@ -95,9 +97,9 @@ flowchart TD
 
 1. Admin UI (`/admin`, login-gated) `POST /api/v1/upload` with the admin Basic
    auth header (multipart: file + optional title/genre/year/…).
-2. **upload-api**: validates → puts raw file to `raw-uploads` → writes a
+1. **upload-api**: validates → puts raw file to `raw-uploads` → writes a
    DynamoDB catalog row with `status=processing` (the **movie id is the job id**)
-   → enqueues an SQS message `{job_id, s3_key}`.
+  → enqueues a durable queue item `{job_id, s3_key}`.
 3. **transcode-worker**: receives the job, downloads the raw file, runs **one**
    FFmpeg pass producing CMAF (fMP4) segments plus `master.m3u8` (HLS) and
    `manifest.mpd` (DASH), uploads everything to `hls-segments/<job_id>/`, then
@@ -123,19 +125,17 @@ flowchart TD
 
 ---
 
-## 4. Local AWS: floci + Terraform
+## 4. Local storage and optional AWS compatibility
 
-- **floci** runs as its own stack (`~/floci-stack`), listening on
-  `http://localhost:4566` and speaking the real AWS wire protocol. It replaces
-  what would be AWS (or LocalStack) in dev — no code changes, just the endpoint.
-- **Terraform** (`infra/terraform`) provisions the S3 buckets, SQS queues, and
-  DynamoDB table **into floci** (path-style S3, dummy creds, `:4566` endpoints).
-- Containers reach floci at `host.docker.internal:4566`; host tools (Terraform,
-  AWS CLI) use `localhost:4566`.
-- As a fallback, every service **lazily self-creates** its resource on first use,
-  so the stack works even if `terraform apply` is skipped.
+- The default Compose deployment uses MinIO for objects and DynamoDB-local for
+  the catalog and durable transcode queue.
+- Buckets, tables, and queue state are initialized by the services and persist
+  in Docker volumes.
+- `infra/terraform` and [infra-floci.md](infra-floci.md) document an optional
+  AWS-compatible path for experiments; they are not required by `start.sh`.
 
-See [infra-floci.md](infra-floci.md) for full details and the real→prod mapping.
+See [infra-floci.md](infra-floci.md) for the optional compatibility path and the
+real-to-production mapping.
 
 ---
 
