@@ -162,7 +162,7 @@ services:
     ports:
       - "127.0.0.1:8001:8001"
 
-  # --- Public gateway + Cloudflare tunnel (opt-in: `--profile tunnel`) ---
+  # --- Public gateway + Cloudflare tunnel (opt-in: `--profile relay` or `tunnel`) ---
   # The gateway is the SINGLE tunnel target: it fans out to upload-api (reads
   # only), beacon-collector and origin by path, and refuses every write/admin
   # path. cloudflared publishes it over an OUTBOUND quick tunnel — no open port,
@@ -173,7 +173,7 @@ services:
       context: ./services/gateway
       dockerfile: Dockerfile
     container_name: streamsre-gateway
-    profiles: [tunnel]
+    profiles: [relay, tunnel]
     depends_on:
       - upload-api
       - origin

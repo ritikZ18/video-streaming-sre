@@ -113,7 +113,9 @@ cleanup worker, and relay metrics. It does not process source video.
 
 ### Phase 2: Build the Laptop B relay
 
-- add a relay Compose profile/configuration;
+- add a relay Compose profile/configuration using the existing gateway boundary;
+- keep the relay profile free of Redis, extra databases, and codec services;
+- add CIDR/interface controls only at the network boundary when required;
 - add private storage and scoped publisher pairing;
 - add artifact upload, checksum verification, and ready-state publication;
 - enforce storage, duration, viewer, and bandwidth quotas;
@@ -192,3 +194,20 @@ connections.
 - the room continues after Laptop A shuts down;
 - a relay restart preserves ready media and room state as designed;
 - only Laptop A performs codec inspection and transcoding.
+
+## Relay Profile Startup
+
+The first relay profile uses the existing gateway and persistent Compose
+services. It does not start Cloudflared automatically and does not add Redis or
+another stateful service:
+
+```bash
+RELAY_BIND_ADDRESS=127.0.0.1 \
+  docker compose -f docker-compose.yml -f docker-compose.relay.yml \
+  --profile relay up -d gateway
+```
+
+For a protected reverse proxy or firewall on Laptop B, keep the gateway bound
+to loopback. If a deliberately managed LAN interface is required, set
+`RELAY_BIND_ADDRESS` to that interface address and enforce an allowlist at the
+host firewall. Do not bind it to `0.0.0.0` by default.
