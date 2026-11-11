@@ -551,7 +551,8 @@ video-streaming-sre/
 Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/transcode-pipeline.md`](docs/transcode-pipeline.md) ·
 [`docs/design.md`](docs/design.md) ·
-[`docs/infra-floci.md`](docs/infra-floci.md).
+[`docs/infra-floci.md`](docs/infra-floci.md) ·
+[`docs/deployment-modes.md`](docs/deployment-modes.md).
 
 ---
 
@@ -567,5 +568,8 @@ Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 - [ ] Viewer accounts: resume / continue-watching / My List
 - [ ] Durable queue (move SQS off the in-memory emulator)
 - [ ] Cloud deploy (ECS + CloudFront)
+- [ ] Laptop B relay mode with sandboxed artifact-only media delivery
+- [ ] Watch-party rooms, synchronized playback, chat, and scheduled premieres
+- [ ] Optional WebRTC voice and measured peer-assisted segment delivery
 
 <div align="center"><sub>Built as an SRE portfolio project — local-first, GPU-accelerated, and instrumented end to end.</sub></div>
