@@ -309,6 +309,7 @@ Set the generated value in `.env`:
 ```text
 RELAY_INGRESS_TOKEN=<generated-value>
 RELAY_BIND_ADDRESS=127.0.0.1
+PARTY_ADMIN_TOKEN=<another-generated-token>
 ```
 
 Set the required admin and Grafana passwords too, then start the relay profile:
@@ -360,3 +361,25 @@ The upload response must report `"status":"ready"`. Laptop B writes the
 objects under `relay/<movie_id>/` and only then creates `ready.json`. The
 publisher can shut down after this response; public watch-party registration
 and playback routing will be added in the next phase.
+
+## Watch-Party API
+
+Create rooms from the operator side with the party admin token:
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/party/rooms \
+  -H "Authorization: Bearer $PARTY_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"movie_id":"movie-a81f2","title":"Friday Movie Night"}'
+```
+
+Guests use the returned `room_id` and `invite_token` with:
+
+```text
+GET /api/party/rooms/<room_id>?invite_token=<invite_token>
+WS  /ws/party/<room_id>?invite_token=<invite_token>&name=Guest
+```
+
+The WebSocket supports `chat` messages and versioned `playback` messages. Room
+metadata is durable in DynamoDB-local; active connections and presence are
+intentionally in memory on the single relay instance.
