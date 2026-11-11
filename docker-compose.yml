@@ -102,8 +102,7 @@ services:
       <<: *aws-local
       # Browser-facing origin URL baked into stored manifest URLs.
       ORIGIN_BASE_URL: ${ORIGIN_BASE_URL:-http://localhost:8080}
-      # GPU encode: set USE_NVENC=1 AFTER installing nvidia-container-toolkit on
-      # the host and uncommenting the `deploy.resources` block below.
+      # GPU encode is enabled only by docker-compose.gpu.yml.
       USE_NVENC: ${USE_NVENC:-0}
     depends_on:
       <<: *storage-deps
@@ -111,15 +110,6 @@ services:
       # interpolation is requested, and falls back to native fps if it is down.
       io-framer:
         condition: service_started
-    # --- GPU (optional): uncomment once nvidia-container-toolkit is installed ---
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
   # --- I/O Framer (frame interpolation sidecar) ---
   # RIFE FPS boost over Vulkan. The worker calls it per job when interpolation is
   # requested. Defaults to the lavapipe CPU fallback; uncomment the GPU block to
