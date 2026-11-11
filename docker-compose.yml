@@ -251,6 +251,7 @@ services:
       - VITE_BEACON_URL=${VITE_BEACON_URL:-http://localhost:8001}
       - VITE_GRAFANA_URL=${VITE_GRAFANA_URL:-http://localhost:3000}
       - VITE_PROMETHEUS_URL=${VITE_PROMETHEUS_URL:-http://localhost:9090}
+      - NEXT_PUBLIC_MAX_UPLOAD_MB=${MAX_UPLOAD_SIZE_MB:-10000}
       # Server-side only — used by the /api/tmdb proxy route, never sent to the
       # browser. Runtime env (no rebuild needed to change it).
       - TMDB_API_KEY=${TMDB_API_KEY:-}

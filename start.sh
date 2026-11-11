@@ -14,6 +14,7 @@
 #                                # verify it serves, and print the ?api= viewer link
 #                                # (set VIEWER_URL to your Render frontend URL)
 #   ./start.sh --help            # show this help and exit
+#   ./start.sh --restart         # stop the stack, rebuild images, and start again
 #
 set -euo pipefail
 
@@ -33,6 +34,7 @@ Usage:
   ./start.sh --queue-clear all
                               Remove every queued transcode job.
   ./start.sh --tunnel         Start the optional Cloudflare quick tunnel.
+  ./start.sh --restart        Stop, rebuild, and start the local stack.
   ./start.sh --help           Show this help.
 
 Environment:
@@ -44,6 +46,12 @@ Common relay commands:
     --profile relay up -d --build
 EOF
   exit 0
+fi
+
+if [[ "${1:-}" == "--restart" ]]; then
+  log "Stopping the current stack"
+  docker compose down --remove-orphans
+  exec "$0"
 fi
 
 # 0) Queue maintenance -------------------------------------------------------
