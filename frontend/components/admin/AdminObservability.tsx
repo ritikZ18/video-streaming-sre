@@ -182,6 +182,9 @@ export function AdminObservability() {
           <Radio className="h-3 w-3 animate-pulse" /> live
         </span>
       </div>
+      <p className="mb-4 text-xs text-white/45">
+        Beacon collector connected · {s.recent_events.length} events received in the rolling window
+      </p>
 
       {/* Headline cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
