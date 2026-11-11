@@ -211,3 +211,39 @@ For a protected reverse proxy or firewall on Laptop B, keep the gateway bound
 to loopback. If a deliberately managed LAN interface is required, set
 `RELAY_BIND_ADDRESS` to that interface address and enforce an allowlist at the
 host firewall. Do not bind it to `0.0.0.0` by default.
+
+## Artifact Ingress
+
+The first Laptop B transfer path is intentionally separate from viewer traffic:
+
+```text
+Laptop A
+  completed HLS/CMAF bundle + artifact.json
+        |
+        | HTTPS or private relay network, Bearer token
+        v
+Laptop B :8010/v1/artifacts
+  validate paths, checksums, size, and manifest
+        |
+        v
+MinIO streamsre-hls-segments/relay/<movie_id>/
+  ready.json written only after every object succeeds
+```
+
+The ingress accepts a gzip tar bundle whose first file is `artifact.json`.
+Every listed object must have a SHA-256 checksum. The service rejects absolute
+paths, `..` traversal, duplicate files, unexpected files, incomplete bundles,
+and bundles above `RELAY_MAX_BUNDLE_MB`.
+
+The endpoint is not routed through the public viewer gateway. It is an
+operator-to-relay transfer surface and should be reachable only through a
+private network, a firewall allowlist, or a separately authenticated HTTPS
+reverse proxy. The token is configured with `RELAY_INGRESS_TOKEN` and should
+be generated with at least 32 random bytes, for example:
+
+```bash
+openssl rand -hex 32
+```
+
+This phase publishes a `ready.json` marker after validation and storage. Public
+catalog registration, room scheduling, and HLS URL mapping are later phases.

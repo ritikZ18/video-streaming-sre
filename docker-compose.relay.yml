@@ -7,3 +7,6 @@ services:
   gateway:
     ports:
       - "${RELAY_BIND_ADDRESS:-127.0.0.1}:8088:8088"
+  relay-ingress:
+    ports:
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:8010:8010"

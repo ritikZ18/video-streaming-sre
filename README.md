@@ -534,7 +534,8 @@ video-streaming-sre/
 │   │       ├── catalog.py     # DynamoDB writes (guarded)
 │   │       └── main.py        # SQS loop + startup reconciler
 │   ├── origin/              # nginx origin: serve/cache manifests + segments
-│   └── beacon-collector/    # QoE telemetry ingest
+│   ├── beacon-collector/    # QoE telemetry ingest
+│   └── relay-ingress/       # Laptop B: verified HLS/CMAF artifact intake only
 ├── frontend/                # Next.js 15 player UI + admin studio (hls.js)
 ├── infra/terraform/         # Optional IaC reference for AWS-compatible deployments
 ├── observability/           # Prometheus, Grafana, Alertmanager configs + dashboards

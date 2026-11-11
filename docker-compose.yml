@@ -162,6 +162,32 @@ services:
     ports:
       - "127.0.0.1:8001:8001"
 
+  # --- Laptop B artifact-only relay ingress -------------------------------
+  # This service accepts completed HLS/CMAF bundles only. It has no FFmpeg,
+  # ffprobe, GPU runtime, Docker socket, or database of its own.
+  relay-ingress:
+    build:
+      context: ./services/relay-ingress
+      dockerfile: Dockerfile
+    container_name: streamsre-relay-ingress
+    profiles: [relay]
+    env_file: .env
+    environment:
+      <<: *aws-local
+      RELAY_BUCKET: ${S3_SEGMENTS_BUCKET:-streamsre-hls-segments}
+      RELAY_INGRESS_TOKEN: ${RELAY_INGRESS_TOKEN:-}
+      RELAY_MAX_BUNDLE_MB: ${RELAY_MAX_BUNDLE_MB:-10240}
+    depends_on: *storage-deps
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - "8010"
+
   # --- Public gateway + Cloudflare tunnel (opt-in: `--profile relay` or `tunnel`) ---
   # The gateway is the SINGLE tunnel target: it fans out to upload-api (reads
   # only), beacon-collector and origin by path, and refuses every write/admin
