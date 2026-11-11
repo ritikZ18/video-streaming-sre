@@ -149,6 +149,23 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
+require_configured_secret() {
+  local name="$1"
+  local value
+  value="$(sed -n "s/^${name}=//p" .env | head -n 1)"
+  case "$value" in
+    ""|admin|change-this-*)
+      echo "ERROR: ${name} is missing or still uses the .env.example placeholder." >&2
+      echo "Set a unique value in .env before starting StreamSRE." >&2
+      exit 1
+      ;;
+  esac
+}
+
+require_configured_secret ADMIN_USERNAME
+require_configured_secret ADMIN_PASSWORD
+require_configured_secret GRAFANA_ADMIN_PASSWORD
+
 # 2) floci (local AWS on :4566) ---------------------------------------------
 if floci_up; then
   log "floci already running on ${ENDPOINT}"

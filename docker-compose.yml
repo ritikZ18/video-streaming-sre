@@ -85,8 +85,8 @@ services:
     environment:
       <<: *aws-local
       # Admin credentials gating the write endpoints (upload + create movie).
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
     depends_on: *storage-deps
     ports:
       - "8000:8000"
@@ -241,7 +241,7 @@ services:
     container_name: streamsre-grafana
     env_file: .env
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
     ports:
       - "3000:3000"
