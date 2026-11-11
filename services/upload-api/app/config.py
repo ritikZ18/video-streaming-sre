@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     queue_table: str = Field(default="streamsre-transcode-queue", alias="QUEUE_TABLE")
 
     # Admin auth (gates the write endpoints: upload + create movie)
-    admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
-    admin_password: str = Field(default="admin", alias="ADMIN_PASSWORD")
+    admin_username: str = Field(alias="ADMIN_USERNAME")
+    admin_password: str = Field(alias="ADMIN_PASSWORD")
 
     # Upload behaviour
     upload_api_port: int = Field(default=8000, alias="UPLOAD_API_PORT")
