@@ -511,6 +511,8 @@ Then:
 - **Browse & watch** — `http://localhost:3001`
 - **Admin studio** — `http://localhost:3001/admin` (credentials configured in `.env`). Uploads transcode to
   HLS+DASH and appear on the grid within a few seconds (it auto-refreshes).
+- **Upload limit** — source video files up to `10,000 MB` (10 GB decimal) are accepted; configure
+  `MAX_UPLOAD_SIZE_MB` consistently when deploying.
 - **Play directly** — `http://localhost:8080/hls/<job>/master.m3u8` (HLS) or `.../manifest.mpd` (DASH)
 - **Objects** — MinIO console `http://localhost:9001` (loopback only)
 - **Metrics & alerts** — Grafana `http://localhost:3000`, Prometheus `http://localhost:9090`

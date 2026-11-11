@@ -25,7 +25,7 @@ export {
 };
 
 // Keep in sync with upload-api MAX_UPLOAD_SIZE_MB.
-export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 5000);
+export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 10000);
 
 export type BeaconEvent = {
   event: "startup" | "rebuffer" | "bitrate_switch" | "error" | "heartbeat";
