@@ -36,8 +36,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console (browse your objects at http://localhost:9001)
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console (browse your objects at http://localhost:9001)
     volumes:
       - minio_data:/data
 
@@ -89,7 +89,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
     depends_on: *storage-deps
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   # --- Transcode Worker ---
   transcode-worker:
@@ -130,7 +130,7 @@ services:
       # NVIDIA_DRIVER_CAPABILITIES: all
     depends_on: *storage-deps
     ports:
-      - "8090:8000"
+      - "127.0.0.1:8090:8000"
     # deploy:
     #   resources:
     #     reservations:
@@ -150,7 +150,7 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on: *storage-deps
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   # --- Beacon Collector ---
   beacon-collector:
@@ -160,7 +160,7 @@ services:
     container_name: streamsre-beacon-collector
     env_file: .env
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
   # --- Public gateway + Cloudflare tunnel (opt-in: `--profile tunnel`) ---
   # The gateway is the SINGLE tunnel target: it fans out to upload-api (reads
@@ -179,7 +179,7 @@ services:
       - origin
       - beacon-collector
     ports:
-      - "8088:8088"   # host access to eyeball the public surface locally
+      - "127.0.0.1:8088:8088"   # host access to eyeball the public surface locally
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -211,7 +211,7 @@ services:
       # browser. Runtime env (no rebuild needed to change it).
       - TMDB_API_KEY=${TMDB_API_KEY:-}
     ports:
-      - "3001:80"
+      - "127.0.0.1:3001:80"
     depends_on:
       - upload-api
       - origin
@@ -224,7 +224,7 @@ services:
       dockerfile: Dockerfile
     container_name: streamsre-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/prometheus/rules:/etc/prometheus/rules:ro
@@ -244,7 +244,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -260,7 +260,7 @@ services:
     container_name: streamsre-alertmanager
     env_file: .env
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     volumes:
       - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     depends_on:
