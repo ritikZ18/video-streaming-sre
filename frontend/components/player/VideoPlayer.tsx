@@ -150,7 +150,7 @@ export function VideoPlayer({
   const [currentLevel, setCurrentLevel] = useState(-1);
   const [audioTracks, setAudioTracks] = useState<AudioOpt[]>([]);
   const [currentAudio, setCurrentAudio] = useState(0);
-  const [currentCaption, setCurrentCaption] = useState(-1); // -1 = off
+  const [currentCaption, setCurrentCaption] = useState(subtitleTracks.length ? 0 : -1); // -1 = off
   const [rate, setRate] = useState(1);
 
   const [showStats, setShowStats] = useState(false);
@@ -194,6 +194,18 @@ export function VideoPlayer({
   // is on and available, else the original. Effects key off this so a toggle
   // reloads the player onto the other ladder.
   const activeSrc = useInterp && interpSrc ? interpSrc : src;
+
+  // Native text tracks start disabled unless a track has the `default` attribute.
+  // Keep the first extracted text track visible by default; the captions menu can
+  // still turn it off or switch languages.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || subtitleTracks.length === 0) return;
+    for (let i = 0; i < video.textTracks.length; i += 1) {
+      video.textTracks[i].mode = i === 0 ? "showing" : "disabled";
+    }
+    setCurrentCaption((current) => (current < 0 ? 0 : current));
+  }, [subtitleTracks]);
 
   // ---- HLS ----
   useEffect(() => {
@@ -758,8 +770,8 @@ export function VideoPlayer({
         style={imax ? { transform: `scale(${imaxZoom})` } : undefined}
         playsInline
       >
-        {subtitleTracks.map((t) => (
-          <track key={t.url} kind="subtitles" src={t.url} srcLang={t.language} label={t.label} />
+        {subtitleTracks.map((t, i) => (
+          <track key={t.url} kind="subtitles" src={t.url} srcLang={t.language} label={t.label} default={i === 0} />
         ))}
       </video>
 

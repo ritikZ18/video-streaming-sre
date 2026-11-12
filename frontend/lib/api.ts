@@ -418,6 +418,15 @@ export async function retranscodeMovie(movieId: string): Promise<void> {
   if (!res.ok && res.status !== 202) throw new Error(`re-transcode failed: ${res.status}`);
 }
 
+export async function publishMovieToRelay(movieId: string): Promise<{ status: string }> {
+  const res = await fetch(`${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/relay`, {
+    method: "POST",
+    headers: { ...authHeader() },
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || `Relay publish failed: ${res.status}`);
+  return (await res.json()) as { status: string };
+}
+
 /** Add a NON-destructive smoothed (interpolated) rendition to a title via I/O
     Framer (admin). The original ladder is left intact; the worker publishes the
     smoothed one to {id}/interp/ and links it via interp_manifest_url, which the

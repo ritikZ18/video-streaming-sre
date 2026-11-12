@@ -317,7 +317,28 @@ def extract_subtitle_to_vtt(input_path: Path, output_path: Path, stream_index: i
         "-map", f"0:{stream_index}", "-c:s", "webvtt", str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+    return result.returncode == 0 and _constrain_vtt_position(output_path)
+
+
+def _constrain_vtt_position(path: Path) -> bool:
+    """Keep browser captions inside the video stage's upper safe area."""
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    constrained: list[str] = []
+    for line in lines:
+        if " --> " in line:
+            start, end = line.split(" --> ", 1)
+            settings = end.split(" ", 1)
+            end_time = settings[0]
+            existing = settings[1] if len(settings) == 2 else ""
+            if "line:" not in existing:
+                existing = f"line:10% position:50% size:80% align:center {existing}".strip()
+            constrained.append(f"{start} --> {end_time} {existing}")
+        else:
+            constrained.append(line)
+    path.write_text("\n".join(constrained) + "\n", encoding="utf-8")
+    return True
 
 
 def extract_subtitles_batch(
@@ -343,7 +364,7 @@ def extract_subtitles_batch(
         cmd += ["-map", f"0:{s['stream_index']}", "-c:s", "webvtt", str(vtt)]
         planned.append((s, vtt))
     subprocess.run(cmd, capture_output=True, text=True, check=False)
-    good = [(s, vtt) for s, vtt in planned if vtt.exists() and vtt.stat().st_size > 0]
+    good = [(s, vtt) for s, vtt in planned if _constrain_vtt_position(vtt)]
     if not good:
         # Single-pass produced nothing (one bad stream can abort ffmpeg); fall
         # back to per-track extraction so healthy tracks still come through.

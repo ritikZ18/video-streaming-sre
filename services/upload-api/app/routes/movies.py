@@ -10,7 +10,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 from app.auth import require_admin
 from app.config import get_settings
 from app.models.schemas import Movie, MovieCreate, MovieList, MoviePatch
-from app.services import catalog, queue, s3
+from app.services import catalog, queue, relay, s3
 
 router = APIRouter(prefix="/api/v1/movies", tags=["movies"])
 
@@ -26,6 +26,17 @@ def get_movie(movie_id: str) -> Movie:
     if movie is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found")
     return movie
+
+
+@router.post("/{movie_id}/relay")
+def publish_to_relay(movie_id: str, _admin: str = Depends(require_admin)) -> dict[str, object]:
+    movie = _require_movie(movie_id)
+    if movie.status != "ready":
+        raise HTTPException(status_code=409, detail="Only ready titles can be sent to the relay")
+    try:
+        return relay.publish_movie(movie_id, 0, "2099-12-31T23:59:59Z")
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post(

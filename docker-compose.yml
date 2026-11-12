@@ -84,6 +84,8 @@ services:
     env_file: .env
     environment:
       <<: *aws-local
+      RELAY_SERVER_URL: ${RELAY_SERVER_URL:-}
+      RELAY_INGRESS_TOKEN: ${RELAY_INGRESS_TOKEN:-}
       # Admin credentials gating the write endpoints (upload + create movie).
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}

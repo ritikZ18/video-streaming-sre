@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     )
     s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
 
+    # Optional Laptop B relay destination. Empty keeps standalone mode unchanged.
+    relay_server_url: str | None = Field(default=None, alias="RELAY_SERVER_URL")
+    relay_ingress_token: str | None = Field(default=None, alias="RELAY_INGRESS_TOKEN")
+
     # DynamoDB (catalog)
     dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
     dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
