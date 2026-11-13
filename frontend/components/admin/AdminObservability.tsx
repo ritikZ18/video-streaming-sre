@@ -1,7 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles, Music, Captions, Check, Eye, EyeOff, StopCircle } from "lucide-react";
+import {
+  Activity,
+  Zap,
+  AlertTriangle,
+  Users,
+  Radio,
+  Gauge,
+  Loader2,
+  Film,
+  Sparkles,
+  Music,
+  Captions,
+  Check,
+  Eye,
+  EyeOff,
+  StopCircle,
+  Search,
+  X,
+  ScanSearch,
+} from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 import { clearBackendOverride, backendOverride } from "../../lib/backend";
@@ -43,7 +62,9 @@ function fmtDur(sec: number | null): string {
 function fmtPartyTime(value: string | number | undefined): string {
   if (value == null || value === "") return "—";
   const date = new Date(typeof value === "number" ? value * 1000 : value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
 function StatCard({
@@ -62,8 +83,12 @@ function StatCard({
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
       <div className="flex items-center gap-2">
-        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${toneClass[tone]}`}>{icon}</span>
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-white/40">{label}</span>
+        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${toneClass[tone]}`}>
+          {icon}
+        </span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
+          {label}
+        </span>
       </div>
       <div className="mt-3 text-2xl font-bold tabular-nums text-white">{value}</div>
       {sub && <div className="mt-0.5 text-[11px] text-white/45">{sub}</div>}
@@ -96,6 +121,8 @@ export function AdminObservability() {
   const [partyRooms, setPartyRooms] = useState<PartyRoom[]>([]);
   const [revealedCodes, setRevealedCodes] = useState<Set<string>>(() => new Set());
   const [endingRoom, setEndingRoom] = useState<string | null>(null);
+  const [partySearch, setPartySearch] = useState("");
+  const [inspectedRoomId, setInspectedRoomId] = useState<string | null>(null);
   // Ticks every second so interpolation elapsed / ETA count up smoothly between
   // the 4s catalog polls.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -121,7 +148,11 @@ export function AdminObservability() {
   }, [load]);
 
   useEffect(() => {
-    const loadParties = () => { void fetchPartyAdminStats().then((result) => setPartyRooms(result.rooms)).catch(() => {}); };
+    const loadParties = () => {
+      void fetchPartyAdminStats()
+        .then((result) => setPartyRooms(result.rooms))
+        .catch(() => {});
+    };
     loadParties();
     const timer = setInterval(loadParties, 4000);
     return () => clearInterval(timer);
@@ -130,16 +161,27 @@ export function AdminObservability() {
   async function stopParty(room: PartyRoom) {
     const scheduled = room.state === "scheduled";
     const action = scheduled ? "cancel this scheduled watch party" : "end this live watch party";
-    if (!window.confirm(`Are you sure you want to ${action}? Viewers will immediately lose stream access.`)) return;
+    if (
+      !window.confirm(
+        `Are you sure you want to ${action}? Viewers will immediately lose stream access.`,
+      )
+    )
+      return;
     setEndingRoom(room.room_id);
     try {
       await endPartyRoom(room.room_id);
-      setPartyRooms((current) => current.map((item) => item.room_id === room.room_id ? {
-        ...item,
-        state: "ended",
-        ended_at: Date.now() / 1000,
-        completion_reason: scheduled ? "cancelled" : "ended_by_admin",
-      } : item));
+      setPartyRooms((current) =>
+        current.map((item) =>
+          item.room_id === room.room_id
+            ? {
+                ...item,
+                state: "ended",
+                ended_at: Date.now() / 1000,
+                completion_reason: scheduled ? "cancelled" : "ended_by_admin",
+              }
+            : item,
+        ),
+      );
     } catch (reason) {
       window.alert(reason instanceof Error ? reason.message : "Could not end this watch party.");
     } finally {
@@ -150,28 +192,32 @@ export function AdminObservability() {
   // Poll the catalog for the content_id → title map AND live encode status.
   useEffect(() => {
     const loadMovies = () => {
-      listMovies().then(setMovies).catch(() => {});
+      listMovies()
+        .then(setMovies)
+        .catch(() => {});
     };
     loadMovies();
     const t = setInterval(loadMovies, 4000);
     return () => clearInterval(t);
   }, []);
 
-  const titles = useMemo(
-    () => new Map(movies.map((m) => [m.id, m.title] as const)),
-    [movies],
-  );
+  const titles = useMemo(() => new Map(movies.map((m) => [m.id, m.title] as const)), [movies]);
+  const filteredPartyRooms = useMemo(() => {
+    const query = partySearch.trim().toLocaleLowerCase();
+    if (!query) return partyRooms;
+    return partyRooms.filter(
+      (room) =>
+        room.title.toLocaleLowerCase().includes(query) ||
+        room.room_id.includes(query) ||
+        room.state.toLocaleLowerCase().includes(query),
+    );
+  }, [partyRooms, partySearch]);
+  const inspectedRoom = partyRooms.find((room) => room.room_id === inspectedRoomId) ?? null;
   // Titles the worker is actively encoding — including re-encodes / audio
   // re-segmenting of titles that already have a (still-playable) manifest.
-  const encoding = useMemo(
-    () => movies.filter((m) => m.status === "processing"),
-    [movies],
-  );
+  const encoding = useMemo(() => movies.filter((m) => m.status === "processing"), [movies]);
   // Titles with any frame-interpolation activity (I/O Framer): request + state.
-  const interpJobs = useMemo(
-    () => movies.filter((m) => m.interpStatus),
-    [movies],
-  );
+  const interpJobs = useMemo(() => movies.filter((m) => m.interpStatus), [movies]);
 
   const titleOf = useCallback(
     (id: string | null) => (id && titles.get(id)) || (id ? `${id.slice(0, 8)}…` : "—"),
@@ -269,11 +315,182 @@ export function AdminObservability() {
       </div>
 
       <div className="mt-4 overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.035]">
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-violet-200/70"><Radio className="h-3.5 w-3.5" /> Watch-party control room</span>
-          <span className="text-[11px] text-white/40">{partyRooms.filter((room) => room.state === "live").length} live · {partyRooms.length} total</span>
+        <div className="flex flex-col gap-3 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-violet-200/70">
+            <Radio className="h-3.5 w-3.5" /> Watch-party control room
+          </span>
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:max-w-md">
+            <label className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/35" />
+              <input
+                value={partySearch}
+                onChange={(event) => setPartySearch(event.target.value)}
+                placeholder="Search title, code, or state"
+                className="h-9 w-full rounded-lg border border-white/10 bg-black/20 pl-9 pr-8 text-xs text-white outline-none placeholder:text-white/30 focus:border-violet-400/50"
+              />
+              {partySearch && (
+                <button
+                  type="button"
+                  aria-label="Clear party search"
+                  onClick={() => setPartySearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-white/35 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </label>
+            <span className="shrink-0 text-[11px] text-white/40">
+              {partyRooms.filter((room) => room.state === "live").length} live · {partyRooms.length}{" "}
+              total
+            </span>
+          </div>
         </div>
-        {!partyRooms.length ? <p className="px-4 py-6 text-center text-sm text-white/40">No watch parties created yet.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[1040px] text-left text-xs"><thead className="bg-black/10 text-[9px] uppercase tracking-wider text-white/35"><tr><th className="px-4 py-2.5">Presentation</th><th className="px-4 py-2.5">State</th><th className="px-4 py-2.5">Audience</th><th className="px-4 py-2.5">Viewer diagnostics</th><th className="px-4 py-2.5">Broadcast position</th><th className="px-4 py-2.5">Timeline</th><th className="px-4 py-2.5">Actions</th></tr></thead><tbody className="divide-y divide-white/[.06]">{partyRooms.map((room) => { const revealed = revealedCodes.has(room.room_id); const finishedLabel = room.completion_reason === "cancelled" ? "Cancelled" : room.completion_reason === "ended_by_admin" ? "Ended by admin" : "Completed"; return <tr key={room.room_id} className="align-top"><td className="px-4 py-3"><b className="block max-w-[240px] truncate text-white">{room.title}</b><button type="button" className="mt-1 inline-flex items-center gap-1 font-mono text-[9px] text-white/40 hover:text-violet-200" onClick={() => setRevealedCodes((current) => { const next = new Set(current); if (next.has(room.room_id)) next.delete(room.room_id); else next.add(room.room_id); return next; })}>{revealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}code {revealed ? room.room_id : `••••••${room.room_id.slice(-4)}`}</button></td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${room.state === "live" ? "bg-emerald-500/15 text-emerald-300" : room.state === "ended" ? "bg-sky-500/10 text-sky-200/70" : "bg-violet-500/15 text-violet-300"}`}>{room.state === "ended" ? finishedLabel : room.state}</span></td><td className="px-4 py-3 tabular-nums text-white/70">{room.participants ?? 0} joined · {room.ready_participants ?? 0} ready</td><td className="px-4 py-3"><div className="grid max-h-24 gap-1 overflow-auto">{(room.participant_details ?? []).map((viewer) => <span key={viewer.viewer_id} className="whitespace-nowrap text-[9px] text-white/45"><b className="text-white/70">{viewer.name}</b> · {viewer.country} · #{viewer.ip_hash} · {viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps</span>)}{!(room.participant_details?.length) && <span className="text-[9px] text-white/30">No connected viewers</span>}</div></td><td className="px-4 py-3 font-mono tabular-nums text-white/70">{fmtDur(room.position_seconds ?? 0)}</td><td className="px-4 py-3 text-[10px] leading-5 text-white/50"><span className="block"><b className="text-white/30">{room.completion_reason === "cancelled" ? "Scheduled" : "Started"}</b> · {fmtPartyTime(room.starts_at)}</span><span className="block"><b className="text-white/30">Ended</b> · {room.state === "ended" ? fmtPartyTime(room.ended_at) : "—"}</span></td><td className="px-4 py-3">{room.state !== "ended" && <button type="button" disabled={endingRoom === room.room_id} onClick={() => void stopParty(room)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-rose-400/25 bg-rose-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-wait disabled:opacity-50">{endingRoom === room.room_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <StopCircle className="h-3.5 w-3.5" />}{room.state === "scheduled" ? "Cancel" : "End stream"}</button>}</td></tr>; })}</tbody></table></div>}
+        {!partyRooms.length ? (
+          <p className="px-4 py-6 text-center text-sm text-white/40">
+            No watch parties created yet.
+          </p>
+        ) : !filteredPartyRooms.length ? (
+          <p className="px-4 py-6 text-center text-sm text-white/40">
+            No watch parties match that search.
+          </p>
+        ) : (
+          <div className="max-h-[34rem] overflow-auto overscroll-contain">
+            <table className="w-full min-w-[1040px] text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-[#11101c] text-[9px] uppercase tracking-wider text-white/35 shadow-[0_1px_0_rgba(255,255,255,.08)]">
+                <tr>
+                  <th className="px-4 py-2.5">Presentation</th>
+                  <th className="px-4 py-2.5">State</th>
+                  <th className="px-4 py-2.5">Audience</th>
+                  <th className="px-4 py-2.5">Viewer diagnostics</th>
+                  <th className="px-4 py-2.5">Broadcast position</th>
+                  <th className="px-4 py-2.5">Timeline</th>
+                  <th className="px-4 py-2.5">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[.06]">
+                {filteredPartyRooms.map((room) => {
+                  const revealed = revealedCodes.has(room.room_id);
+                  const finishedLabel =
+                    room.completion_reason === "cancelled"
+                      ? "Cancelled"
+                      : room.completion_reason === "ended_by_admin"
+                        ? "Ended by admin"
+                        : "Completed";
+                  return (
+                    <tr key={room.room_id} className="align-top">
+                      <td className="px-4 py-3">
+                        <b className="block max-w-[240px] truncate text-white">{room.title}</b>
+                        <button
+                          type="button"
+                          className="mt-1 inline-flex items-center gap-1 font-mono text-[9px] text-white/40 hover:text-violet-200"
+                          onClick={() =>
+                            setRevealedCodes((current) => {
+                              const next = new Set(current);
+                              if (next.has(room.room_id)) next.delete(room.room_id);
+                              else next.add(room.room_id);
+                              return next;
+                            })
+                          }
+                        >
+                          {revealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                          code {revealed ? room.room_id : `••••••${room.room_id.slice(-4)}`}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${room.state === "live" ? "bg-emerald-500/15 text-emerald-300" : room.state === "ended" ? "bg-sky-500/10 text-sky-200/70" : "bg-violet-500/15 text-violet-300"}`}
+                        >
+                          {room.state === "ended" ? finishedLabel : room.state}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 tabular-nums text-white/70">
+                        {room.participants ?? 0} joined · {room.ready_participants ?? 0} ready
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="grid max-w-[230px] gap-1">
+                          {(room.participant_details ?? []).slice(0, 2).map((viewer) => (
+                            <span
+                              key={viewer.viewer_id}
+                              className="block truncate whitespace-nowrap text-[9px] text-white/45"
+                              title={`${viewer.name} · ${viewer.country} · #${viewer.ip_hash} · ${viewer.drift_ms}ms · ${viewer.bitrate_kbps || 0}kbps`}
+                            >
+                              <b className="text-white/70">{viewer.name}</b> · {viewer.country} · {viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps
+                            </span>
+                          ))}
+                          {(room.participant_details?.length ?? 0) > 2 && (
+                            <span className="text-[9px] text-violet-200/60">+{room.participant_details!.length - 2} more — inspect stream</span>
+                          )}
+                          {!room.participant_details?.length && (
+                            <span className="text-[9px] text-white/30">No connected viewers</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 font-mono tabular-nums text-white/70">
+                        {fmtDur(room.position_seconds ?? 0)}
+                      </td>
+                      <td className="px-4 py-3 text-[10px] leading-5 text-white/50">
+                        <span className="block">
+                          <b className="text-white/30">
+                            {room.completion_reason === "cancelled" ? "Scheduled" : "Started"}
+                          </b>{" "}
+                          · {fmtPartyTime(room.starts_at)}
+                        </span>
+                        <span className="block">
+                          <b className="text-white/30">Ended</b> ·{" "}
+                          {room.state === "ended" ? fmtPartyTime(room.ended_at) : "—"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => setInspectedRoomId(room.room_id)}
+                          className="mb-2 inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-400/25 bg-violet-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-violet-200 transition hover:bg-violet-500/20"
+                        >
+                          <ScanSearch className="h-3.5 w-3.5" /> Inspect
+                        </button>
+                        {room.state !== "ended" && (
+                          <button
+                            type="button"
+                            disabled={endingRoom === room.room_id}
+                            onClick={() => void stopParty(room)}
+                            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-rose-400/25 bg-rose-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-wait disabled:opacity-50"
+                          >
+                            {endingRoom === room.room_id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <StopCircle className="h-3.5 w-3.5" />
+                            )}
+                            {room.state === "scheduled" ? "Cancel" : "End stream"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {inspectedRoom && (() => {
+          const viewers = inspectedRoom.participant_details ?? [];
+          const average = (key: "drift_ms" | "bitrate_kbps") => viewers.length ? Math.round(viewers.reduce((sum, viewer) => sum + (viewer[key] || 0), 0) / viewers.length) : 0;
+          return <div className="border-t border-violet-400/15 bg-black/20 p-4">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0"><span className="text-[9px] font-bold uppercase tracking-[.18em] text-violet-300/60">Stream observability</span><h3 className="mt-1 truncate text-sm font-semibold text-white">{inspectedRoom.title}</h3><p className="font-mono text-[10px] text-white/35">Room ••••••{inspectedRoom.room_id.slice(-4)}</p></div>
+              <button type="button" aria-label="Close stream observability" onClick={() => setInspectedRoomId(null)} className="rounded-lg border border-white/10 p-2 text-white/40 hover:bg-white/5 hover:text-white"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Connected</span><b className="mt-1 block text-lg tabular-nums text-white">{viewers.length}</b></div>
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Ready</span><b className="mt-1 block text-lg tabular-nums text-white">{inspectedRoom.ready_participants ?? 0}</b></div>
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Average drift</span><b className="mt-1 block text-lg tabular-nums text-white">{average("drift_ms")} ms</b></div>
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Reported bitrate</span><b className="mt-1 block text-lg tabular-nums text-white">{average("bitrate_kbps")} kbps</b></div>
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-white/10 p-3"><span className="text-[9px] font-bold uppercase tracking-wider text-white/35">Viewer connections</span><div className="mt-2 max-h-40 space-y-1.5 overflow-y-auto">{viewers.map((viewer) => <div key={viewer.viewer_id} className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-white/[.03] px-2.5 py-2 text-[10px]"><span className="min-w-0 truncate text-white/60"><b className="text-white/85">{viewer.name}</b> · {viewer.country} · #{viewer.ip_hash}</span><span className="shrink-0 tabular-nums text-white/40">{viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps</span></div>)}{!viewers.length && <p className="text-xs text-white/30">No viewers currently connected.</p>}</div></div>
+              <div className="rounded-lg border border-white/10 p-3"><span className="text-[9px] font-bold uppercase tracking-wider text-white/35">Recent room events</span><div className="mt-2 max-h-40 space-y-1.5 overflow-y-auto">{(inspectedRoom.recent_events ?? []).slice(-12).reverse().map((event, index) => <div key={`${event.timestamp}-${index}`} className="flex items-center justify-between gap-3 rounded-md bg-white/[.03] px-2.5 py-2 text-[10px]"><span className="truncate capitalize text-white/60">{event.type.replaceAll("_", " ")}{event.name ? ` · ${event.name}` : ""}</span><span className="shrink-0 text-white/30">{fmtPartyTime(event.timestamp)}</span></div>)}{!inspectedRoom.recent_events?.length && <p className="text-xs text-white/30">No recent room events.</p>}</div></div>
+            </div>
+          </div>;
+        })()}
       </div>
 
       {/* Transcode jobs — live encode progress from the catalog (upload-api) */}
@@ -378,8 +595,8 @@ export function AdminObservability() {
                 Math.min(100, (interpolating ? m.interpProgress : m.progress) ?? 0),
               );
               const stageLabel = interpolating
-                ? m.interpStage ?? "interpolating"
-                : m.stage ?? "working";
+                ? (m.interpStage ?? "interpolating")
+                : (m.stage ?? "working");
               const elapsed =
                 active && m.interpStartedAt ? Math.max(0, nowMs / 1000 - m.interpStartedAt) : null;
               // ETA only while interpolating (elapsed maps cleanly onto its 0-100);
@@ -399,8 +616,12 @@ export function AdminObservability() {
                       <span className="flex items-center gap-2 whitespace-nowrap text-[11px] text-white/55">
                         <span className="capitalize">{stageLabel}</span>
                         <span className="tabular-nums text-white/75">{pct}%</span>
-                        {elapsed != null && <span className="text-white/35">· {fmtDur(elapsed)}</span>}
-                        {eta != null && <span className="text-sky-300/80">· ~{fmtDur(eta)} left</span>}
+                        {elapsed != null && (
+                          <span className="text-white/35">· {fmtDur(elapsed)}</span>
+                        )}
+                        {eta != null && (
+                          <span className="text-sky-300/80">· ~{fmtDur(eta)} left</span>
+                        )}
                       </span>
                     ) : m.interpDetail ? (
                       <span
@@ -436,7 +657,8 @@ export function AdminObservability() {
 
       {empty && (
         <p className="mt-4 rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-white/50">
-          No playback in the last {mins} minutes. Play a title (even in another tab) and the metrics stream in live.
+          No playback in the last {mins} minutes. Play a title (even in another tab) and the metrics
+          stream in live.
         </p>
       )}
 
@@ -461,15 +683,23 @@ export function AdminObservability() {
               <tbody>
                 {s.top_content.map((c) => (
                   <tr key={c.content_id} className="border-t border-white/[0.06]">
-                    <td className="max-w-[220px] truncate px-4 py-2 text-white">{titleOf(c.content_id)}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-white/70">{c.sessions}</td>
+                    <td className="max-w-[220px] truncate px-4 py-2 text-white">
+                      {titleOf(c.content_id)}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-white/70">
+                      {c.sessions}
+                    </td>
                     <td className="px-4 py-2 text-right tabular-nums">
-                      <span className={`rounded px-1.5 py-0.5 ${toneClass[startupTone(c.startup_p95_ms)]}`}>
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${toneClass[startupTone(c.startup_p95_ms)]}`}
+                      >
                         {c.startup_p95_ms ? `${c.startup_p95_ms} ms` : "—"}
                       </span>
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">
-                      <span className={`rounded px-1.5 py-0.5 ${toneClass[ratioTone(c.rebuffer_ratio)]}`}>
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${toneClass[ratioTone(c.rebuffer_ratio)]}`}
+                      >
                         {(c.rebuffer_ratio * 100).toFixed(0)}%
                       </span>
                     </td>
@@ -501,14 +731,21 @@ export function AdminObservability() {
           </div>
 
           <div className="min-h-[180px] rounded-xl border border-white/10 p-4">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">Live event feed</div>
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+              Live event feed
+            </div>
             {s.recent_events.length === 0 ? (
               <p className="text-sm text-white/40">Waiting for events…</p>
             ) : (
               <ul className="space-y-1.5">
                 {s.recent_events.slice(0, 12).map((e, i) => (
-                  <li key={`${e.session_id}-${e.ts}-${i}`} className="flex items-center gap-2 text-[11px]">
-                    <span className={`rounded border px-1.5 py-0.5 font-semibold ${eventColor[e.event] ?? eventColor.heartbeat}`}>
+                  <li
+                    key={`${e.session_id}-${e.ts}-${i}`}
+                    className="flex items-center gap-2 text-[11px]"
+                  >
+                    <span
+                      className={`rounded border px-1.5 py-0.5 font-semibold ${eventColor[e.event] ?? eventColor.heartbeat}`}
+                    >
                       {e.event}
                     </span>
                     <span className="truncate text-white/60">{titleOf(e.content_id)}</span>
