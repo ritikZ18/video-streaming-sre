@@ -39,6 +39,12 @@ type VideoPlayerProps = {
   interpFps?: number | null;
   /** Full source track list (VLC-style) for the Tracks panel. */
   mediaInfo?: MediaInfo | null;
+  /** Headers attached to every HLS manifest/segment request (party access). */
+  requestHeaders?: Record<string, string>;
+  /** Locks transport controls and follows this absolute broadcast start time. */
+  broadcastStartMs?: number | null;
+  broadcastLocked?: boolean;
+  onBroadcastHeartbeat?: (detail: { driftMs: number; bitrateKbps: number }) => void;
 };
 
 type Level = { index: number; height: number };
@@ -124,8 +130,16 @@ export function VideoPlayer({
   interpSrc,
   interpFps,
   mediaInfo,
+  requestHeaders,
+  broadcastStartMs,
+  broadcastLocked = false,
+  onBroadcastHeartbeat,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const requestHeadersRef = useRef(requestHeaders);
+  requestHeadersRef.current = requestHeaders;
+  const broadcastHeartbeatRef = useRef(onBroadcastHeartbeat);
+  broadcastHeartbeatRef.current = onBroadcastHeartbeat;
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -156,6 +170,8 @@ export function VideoPlayer({
   const [showStats, setShowStats] = useState(false);
   const [showTracks, setShowTracks] = useState(false);
   const [bitrateKbps, setBitrateKbps] = useState(0);
+  const bitrateRef = useRef(0);
+  bitrateRef.current = bitrateKbps;
   const [rebuffers, setRebuffers] = useState(0);
   const [startupMs, setStartupMs] = useState<number | null>(null);
   const [playingHeight, setPlayingHeight] = useState(0); // actual rendition height, even in auto
@@ -226,10 +242,15 @@ export function VideoPlayer({
     setLoading(false);
 
     let hls: Hls | null = null;
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    if (!requestHeadersRef.current && video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = activeSrc;
     } else if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 60 });
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        backBufferLength: 60,
+        xhrSetup: requestHeadersRef.current ? (xhr) => { for (const [key, value] of Object.entries(requestHeadersRef.current ?? {})) xhr.setRequestHeader(key, value); } : undefined,
+      });
       hlsRef.current = hls;
       hls.loadSource(activeSrc);
       hls.attachMedia(video);
@@ -580,15 +601,38 @@ export function VideoPlayer({
   }, [imax, measureImaxZoom]);
 
   const togglePlay = useCallback(() => {
+    if (broadcastLocked) return;
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) void v.play();
     else v.pause();
-  }, []);
+  }, [broadcastLocked]);
   const seek = useCallback((t: number) => {
+    if (broadcastLocked) return;
     const v = videoRef.current;
     if (v) v.currentTime = Math.max(0, Math.min(t, v.duration || t));
-  }, []);
+  }, [broadcastLocked]);
+
+  // In a watch party the server clock is authoritative. Guests may change
+  // volume/captions/quality/fullscreen, but pause/seek never changes the shared
+  // transmission. Late joins and resumed tabs snap to the current position.
+  useEffect(() => {
+    if (!broadcastLocked || !broadcastStartMs) return;
+    const media = videoRef.current;
+    const sync = () => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 1) return;
+      const expected = Math.max(0, (Date.now() - broadcastStartMs) / 1000);
+      const drift = expected - video.currentTime;
+      broadcastHeartbeatRef.current?.({ driftMs: Math.round(drift * 1000), bitrateKbps: bitrateRef.current });
+      if (Math.abs(drift) > 1.5) video.currentTime = Math.min(expected, video.duration || expected);
+      video.playbackRate = Math.abs(drift) > 0.25 ? (drift > 0 ? 1.03 : 0.97) : 1;
+      if (video.paused) void video.play().catch(() => { video.muted = true; void video.play().catch(() => {}); });
+    };
+    sync();
+    const timer = window.setInterval(sync, 2000);
+    return () => { window.clearInterval(timer); if (media) media.playbackRate = 1; };
+  }, [broadcastLocked, broadcastStartMs]);
   const toggleMute = useCallback(() => {
     const v = videoRef.current;
     if (v) v.muted = !v.muted;
@@ -653,19 +697,24 @@ export function VideoPlayer({
     const onKey = (e: KeyboardEvent) => {
       const v = videoRef.current;
       if (!v) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target?.tagName ?? "")) return;
       switch (e.key.toLowerCase()) {
         case " ":
         case "k":
+          if (broadcastLocked) return;
           e.preventDefault();
           togglePlay();
           break;
         case "arrowleft":
         case "j":
+          if (broadcastLocked) return;
           seek(v.currentTime - 10);
           showFlash(<Rewind className="h-6 w-6" />, "−10s");
           break;
         case "arrowright":
         case "l":
+          if (broadcastLocked) return;
           seek(v.currentTime + 10);
           showFlash(<FastForward className="h-6 w-6" />, "+10s");
           break;
@@ -699,7 +748,7 @@ export function VideoPlayer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seek, toggleFullscreen, toggleMute, showFlash]);
+  }, [togglePlay, seek, toggleFullscreen, toggleMute, showFlash, broadcastLocked]);
 
   const nudge = useCallback(() => {
     setShowControls(true);
@@ -762,7 +811,7 @@ export function VideoPlayer({
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
-        onClick={togglePlay}
+        onClick={broadcastLocked ? undefined : togglePlay}
         poster={poster ?? undefined}
         crossOrigin="anonymous"
         preload="auto"
@@ -804,7 +853,7 @@ export function VideoPlayer({
 
       {/* Center Play button whenever paused (hidden as soon as it's playing). */}
       <AnimatePresence>
-        {!error && !playing && !loading && (
+        {!broadcastLocked && !error && !playing && !loading && (
           <motion.button
             type="button"
             onClick={togglePlay}
@@ -1019,7 +1068,7 @@ export function VideoPlayer({
         animate={{ opacity: showControls || !playing ? 1 : 0 }}
         className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8"
       >
-        <div
+        {!broadcastLocked && <div
           className="relative mb-1.5 h-1.5"
           onMouseMove={(e) => {
             if (!duration) return;
@@ -1068,12 +1117,12 @@ export function VideoPlayer({
             onKeyDown={(e) => { if (e.key.startsWith("Arrow")) e.preventDefault(); }}
             className="absolute inset-0 w-full cursor-pointer opacity-0" aria-label="Seek"
           />
-        </div>
+        </div>}
 
         <div className="flex items-center gap-3 text-white">
-          <button type="button" onClick={togglePlay} aria-label="Play/Pause">
+          {!broadcastLocked && <button type="button" onClick={togglePlay} aria-label="Play/Pause">
             {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-          </button>
+          </button>}
           <div className="flex items-center gap-2">
             <button type="button" onClick={toggleMute} aria-label="Mute">
               {muted || volume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
@@ -1164,7 +1213,7 @@ export function VideoPlayer({
             </div>
 
             {/* Speed */}
-            <div className="relative">
+            {!broadcastLocked && <div className="relative">
               <button type="button" onClick={() => setMenu(menu === "speed" ? null : "speed")} className="rounded px-2 py-1 text-xs font-semibold hover:bg-white/15">{rate}×</button>
               <AnimatePresence>
                 {menu === "speed" && (
@@ -1175,10 +1224,10 @@ export function VideoPlayer({
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
+            </div>}
 
             {/* Smooth (interpolated) rendition toggle — only when one exists. */}
-            {interpSrc && (
+            {!broadcastLocked && interpSrc && (
               <button
                 type="button"
                 onClick={toggleInterp}

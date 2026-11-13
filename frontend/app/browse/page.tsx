@@ -10,6 +10,7 @@ import { Navbar } from "../../components/layout/Navbar";
 import { Footer } from "../../components/layout/Footer";
 import { MovieCard } from "../../components/movie/MovieCard";
 import { MovieDetail } from "../../components/movie/MovieDetail";
+import { isAuthed } from "../../lib/auth";
 
 const GENRES = ["All", "Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
 
@@ -52,6 +53,7 @@ export default function BrowsePage() {
 
   const playMovie = (movie: Movie) => {
     if (!movie.manifestUrl) return;
+    if (!isAuthed()) { window.location.href = "/party"; return; }
     window.location.href = `/player?id=${encodeURIComponent(movie.id)}`;
   };
 

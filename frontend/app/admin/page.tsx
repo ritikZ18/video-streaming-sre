@@ -10,16 +10,20 @@ import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
 import { AdminCatalog } from "../../components/admin/AdminCatalog";
 import { AdminObservability } from "../../components/admin/AdminObservability";
 import { WatchPartyManager } from "../../components/admin/WatchPartyManager";
+import { GuestCodeEntry } from "../../components/party/GuestCodeEntry";
 import { adminLogin } from "../../lib/api";
 import { VIEWER_ONLY } from "../../lib/backend";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
 
 export default function AdminPage() {
-  // The public viewer build ships without admin: the upload-api write endpoints
-  // aren't even exposed through the tunnel gateway, so there's nothing to sign
-  // into here. Keep it a clean dead-end rather than a login that can't succeed.
-  if (VIEWER_ONLY) return <AdminUnavailable />;
-  return <AdminApp />;
+  const [publicHost, setPublicHost] = useState<boolean | null>(VIEWER_ONLY ? true : null);
+  useEffect(() => {
+    if (VIEWER_ONLY) return;
+    const host = window.location.hostname;
+    setPublicHost(!["localhost", "127.0.0.1", "::1"].includes(host));
+  }, []);
+  if (publicHost === null) return null;
+  return publicHost ? <AdminUnavailable /> : <AdminApp />;
 }
 
 function AdminUnavailable() {
@@ -27,15 +31,9 @@ function AdminUnavailable() {
     <div className="min-h-screen text-white">
       <Navbar />
       <main className="px-8 pt-24 pb-16">
-        <div className="mx-auto mt-16 max-w-md rounded-2xl bg-white/5 p-8 text-center">
-          <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-white/10">
-            <Lock className="h-6 w-6" />
-          </span>
-          <h1 className="text-lg font-bold tracking-tight">Admin isn&apos;t available here</h1>
-          <p className="mt-2 text-sm text-white/60">
-            This is the public viewer. Uploading and managing titles run on the operator&apos;s
-            local instance — browse and watch is all this deployment does.
-          </p>
+        <div className="mx-auto mt-12 max-w-lg">
+          <GuestCodeEntry />
+          <p className="mt-5 text-center text-xs leading-5 text-white/35">Looking for admin tools? Administration is available only on the host&apos;s local StreamSRE instance.</p>
         </div>
       </main>
       <Footer />

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Lock } from "lucide-react";
+import { KeyRound, Lock } from "lucide-react";
 import { SearchBar } from "../common/SearchBar";
 import { Logo } from "./Logo";
 import { BackendStatus } from "./BackendStatus";
@@ -62,6 +62,12 @@ export function Navbar() {
       <div className="flex items-center gap-3">
         <SearchBar />
         <BackendStatus />
+        {VIEWER_ONLY && (
+          <button type="button" onClick={() => router.push("/party")} className="inline-flex items-center gap-2 rounded-lg bg-violet-500 px-3 py-2 text-xs font-bold text-white shadow-lg shadow-violet-950/30 transition-colors hover:bg-violet-400">
+            <KeyRound className="h-4 w-4" />
+            Enter code
+          </button>
+        )}
         {!VIEWER_ONLY && (
           <button
             type="button"

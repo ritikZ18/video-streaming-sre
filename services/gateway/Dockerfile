@@ -10,4 +10,4 @@ EXPOSE 8088
 
 # Liveness: the same endpoint the tunnel verifier uses.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:8088/healthz >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://127.0.0.1:8088/healthz >/dev/null 2>&1 || exit 1
