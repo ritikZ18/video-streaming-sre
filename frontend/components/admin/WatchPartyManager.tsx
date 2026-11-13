@@ -11,6 +11,12 @@ type ScheduleMode = "now" | "later";
 type CreatedParty = { code: string; startsAt?: string };
 const pad = (value: number) => String(value).padStart(2, "0");
 const localParts = (date: Date) => ({ date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`, time: `${pad(date.getHours())}:${pad(date.getMinutes())}` });
+const durationSeconds = (runtime: string) => {
+  const hours = Number(runtime.match(/(\d+)\s*h/i)?.[1] ?? 0);
+  const minutes = Number(runtime.match(/(\d+)\s*m/i)?.[1] ?? 0);
+  const seconds = Number(runtime.match(/(\d+)\s*s/i)?.[1] ?? 0);
+  return hours * 3600 + minutes * 60 + seconds;
+};
 
 function countdown(target: number, now: number) {
   const seconds = Math.max(0, Math.floor((target - now) / 1000));
@@ -60,7 +66,9 @@ export function WatchPartyManager() {
     setBusy(true); setError(null);
     try {
       const startsAt = mode === "later" ? scheduledDate.toISOString() : undefined;
-      const result = await createPartyRoom({ movie_id: selected.id, title: selected.title, starts_at: startsAt });
+      const runtime = durationSeconds(selected.duration);
+      if (!runtime) throw new Error("This title has no valid runtime. Retranscode it before creating a party.");
+      const result = await createPartyRoom({ movie_id: selected.id, title: selected.title, starts_at: startsAt, duration_seconds: runtime });
       setCreated({ code: result.code, startsAt });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the watch party."); } finally { setBusy(false); }
   }

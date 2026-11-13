@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -36,6 +37,7 @@ app = FastAPI(title="StreamSRE Party Service", version="1.0.0")
 connections: dict[str, set[WebSocket]] = defaultdict(set)
 participant_meta: dict[str, dict[WebSocket, dict[str, Any]]] = defaultdict(dict)
 room_events: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=500))
+room_end_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 def record_event(room_id: str, kind: str, **detail: Any) -> None:
@@ -46,6 +48,7 @@ class CreateRoom(BaseModel):
     movie_id: str = Field(min_length=3, max_length=96, pattern=r"^[a-zA-Z0-9_-]+$")
     title: str = Field(min_length=1, max_length=160)
     starts_at: datetime | None = None
+    duration_seconds: int = Field(ge=1, le=86_400)
 
 
 def table():
@@ -116,8 +119,56 @@ def room_item(room_id: str) -> dict[str, Any] | None:
     return table().get_item(Key={"room_id": room_id}).get("Item")
 
 
+def room_has_ended(item: dict[str, Any]) -> bool:
+    if item.get("state") == "ended":
+        return True
+    try:
+        return bool(item.get("ends_at")) and time.time() >= float(item["ends_at"])
+    except (TypeError, ValueError):
+        return False
+
+
+async def mark_room_ended(room_id: str) -> None:
+    item = room_item(room_id)
+    if not item or item.get("state") == "ended":
+        return
+    ended_at = int(time.time())
+    table().update_item(
+        Key={"room_id": room_id},
+        UpdateExpression="SET #s = :s, ended_at = :e, playing = :p, position_seconds = :d",
+        ExpressionAttributeNames={"#s": "state"},
+        ExpressionAttributeValues={":s": "ended", ":e": ended_at, ":p": False, ":d": item.get("duration_seconds", 0)},
+    )
+    record_event(room_id, "ended")
+    await broadcast(room_id, {"type": "ended", "ended_at": ended_at})
+
+
+async def wait_for_room_end(room_id: str, ends_at: float) -> None:
+    try:
+        await asyncio.sleep(max(0, ends_at - time.time()))
+        await mark_room_ended(room_id)
+    finally:
+        room_end_tasks.pop(room_id, None)
+
+
+def schedule_room_end(item: dict[str, Any]) -> None:
+    room_id = str(item.get("room_id", ""))
+    if not room_id or room_has_ended(item) or room_id in room_end_tasks:
+        return
+    try:
+        ends_at = float(item["ends_at"])
+    except (KeyError, TypeError, ValueError):
+        return
+    room_end_tasks[room_id] = asyncio.create_task(wait_for_room_end(room_id, ends_at))
+
+
 def public_room(item: dict[str, Any]) -> dict[str, Any]:
-    room = {key: item[key] for key in ("room_id", "movie_id", "title", "state", "starts_at", "position_seconds", "playing", "version", "created_at", "ended_at") if key in item}
+    room = {key: item[key] for key in ("room_id", "movie_id", "title", "state", "starts_at", "ends_at", "duration_seconds", "position_seconds", "playing", "version", "created_at", "ended_at") if key in item}
+    if room_has_ended(item):
+        room.update(state="ended", playing=False, position_seconds=item.get("duration_seconds", item.get("position_seconds", 0)), server_time=time.time())
+        room["participants"] = len(connections.get(str(item.get("room_id")), set()))
+        room["ready_participants"] = sum(1 for meta in participant_meta.get(str(item.get("room_id")), {}).values() if meta.get("ready"))
+        return jsonable_encoder(room)
     starts_at = str(item.get("starts_at", ""))
     if item.get("state") != "ended" and starts_at:
         try:
@@ -143,8 +194,13 @@ async def broadcast(room_id: str, message: dict[str, Any]) -> None:
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     ensure_table()
+    for item in table().scan(Limit=100).get("Items", []):
+        if room_has_ended(item) and item.get("state") != "ended":
+            await mark_room_ended(str(item["room_id"]))
+        else:
+            schedule_room_end(item)
 
 
 @app.get("/health")
@@ -153,7 +209,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/v1/rooms", status_code=201)
-def create_room(request: CreateRoom, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+async def create_room(request: CreateRoom, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_admin(authorization)
     # A fixed-width, cryptographically random code is easy to type on a TV or
     # phone. Conditional insertion makes the already unlikely collision safe.
@@ -161,12 +217,18 @@ def create_room(request: CreateRoom, authorization: str | None = Header(default=
     host_token = secrets.token_urlsafe(32)
     for _ in range(8):
         room_id = f"{secrets.randbelow(10_000_000_000):010d}"
+        starts_at = request.starts_at.isoformat() if request.starts_at else datetime.now().astimezone().isoformat()
+        start_epoch = datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp()
         item = {
             "room_id": room_id,
             "movie_id": request.movie_id,
             "title": request.title,
             "state": "scheduled" if request.starts_at else "live",
-            "starts_at": request.starts_at.isoformat() if request.starts_at else datetime.now().astimezone().isoformat(),
+            "starts_at": starts_at,
+            "duration_seconds": request.duration_seconds,
+            # DynamoDB rejects Python floats; whole-second epoch precision is
+            # sufficient for a watch-party curtain time.
+            "ends_at": int(start_epoch) + request.duration_seconds,
             "position_seconds": 0,
             "playing": False,
             "version": 0,
@@ -178,6 +240,7 @@ def create_room(request: CreateRoom, authorization: str | None = Header(default=
                 Item=item,
                 ConditionExpression="attribute_not_exists(room_id)",
             )
+            schedule_room_end(item)
             return {"code": room_id, "host_token": host_token, "room": public_room(item)}
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
@@ -196,7 +259,7 @@ def get_room(room_id: str) -> dict[str, Any]:
 @app.post("/v1/rooms/{room_id}/join")
 def join_room(room_id: str) -> dict[str, Any]:
     item = room_item(room_id)
-    if not item or item.get("state") == "ended":
+    if not item or room_has_ended(item):
         raise HTTPException(status_code=404, detail="Room not found")
     viewer_id = secrets.token_urlsafe(12)
     return {"access_token": encode_session(room_id, item["movie_id"], viewer_id), "viewer_id": viewer_id, "room": public_room(item)}
@@ -208,7 +271,7 @@ def authorize_media(movie_id: str, authorization: str | None = Header(default=No
     if not session or not secrets.compare_digest(str(session.get("movie", "")), movie_id):
         raise HTTPException(status_code=401, detail="Valid watch-party session required")
     item = room_item(str(session.get("room", "")))
-    if not item or item.get("state") == "ended" or item.get("movie_id") != movie_id:
+    if not item or room_has_ended(item) or item.get("movie_id") != movie_id:
         raise HTTPException(status_code=403, detail="Party access expired")
     starts_at = str(item.get("starts_at", ""))
     try:
@@ -235,8 +298,10 @@ async def end_room(room_id: str, authorization: str | None = Header(default=None
     require_admin(authorization)
     if not room_item(room_id):
         raise HTTPException(status_code=404, detail="Room not found")
-    table().update_item(Key={"room_id": room_id}, UpdateExpression="SET #s = :s, ended_at = :e, playing = :p", ExpressionAttributeNames={"#s": "state"}, ExpressionAttributeValues={":s": "ended", ":e": int(time.time()), ":p": False})
-    await broadcast(room_id, {"type": "ended"})
+    task = room_end_tasks.pop(room_id, None)
+    if task:
+        task.cancel()
+    await mark_room_ended(room_id)
     return {"status": "ended"}
 
 
@@ -246,13 +311,14 @@ async def room_socket(websocket: WebSocket, room_id: str, name: str = "Guest") -
     protocols = [value.strip() for value in websocket.headers.get("sec-websocket-protocol", "").split(",")]
     token = protocols[1] if len(protocols) == 2 and protocols[0] == "party-v1" else ""
     session = decode_session(token)
-    if not item or not session or session.get("room") != room_id or session.get("movie") != item.get("movie_id"):
+    if not item or room_has_ended(item) or not session or session.get("room") != room_id or session.get("movie") != item.get("movie_id"):
         await websocket.close(code=1008)
         return
     if len(connections[room_id]) >= settings.party_max_participants:
         await websocket.close(code=1013)
         return
     await websocket.accept(subprotocol="party-v1")
+    schedule_room_end(item)
     connections[room_id].add(websocket)
     forwarded_ip = websocket.headers.get("cf-connecting-ip") or websocket.headers.get("x-forwarded-for", "").split(",")[0].strip() or (websocket.client.host if websocket.client else "unknown")
     ip_hash = hmac.new(settings.party_admin_token.encode(), forwarded_ip.encode(), hashlib.sha256).hexdigest()[:12]
