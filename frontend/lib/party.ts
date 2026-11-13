@@ -9,6 +9,9 @@ export type PartyRoom = {
   starts_at?: string;
   ends_at?: number;
   duration_seconds?: number;
+  created_at?: number;
+  ended_at?: number;
+  completion_reason?: "completed" | "cancelled" | "ended_by_admin" | string;
   position_seconds: number;
   playing: boolean;
   version: number;
@@ -23,7 +26,7 @@ export type PartyMessage =
   | { type: "room_state"; room: PartyRoom }
   | { type: "presence"; name: string; count: number }
   | { type: "chat"; name: string; text: string }
-  | { type: "ended"; ended_at?: number }
+  | { type: "ended"; ended_at?: number; reason?: string }
   | { type: "playback"; position_seconds: number; playing: boolean; version: number };
 
 function gatewayBase(): string {

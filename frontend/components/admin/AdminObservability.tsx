@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles, Music, Captions, Check } from "lucide-react";
+import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles, Music, Captions, Check, Eye, EyeOff } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 import { clearBackendOverride, backendOverride } from "../../lib/backend";
@@ -38,6 +38,12 @@ function fmtDur(sec: number | null): string {
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function fmtPartyTime(value: string | number | undefined): string {
+  if (value == null || value === "") return "—";
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
 function StatCard({
@@ -88,6 +94,7 @@ export function AdminObservability() {
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState(false);
   const [partyRooms, setPartyRooms] = useState<PartyRoom[]>([]);
+  const [revealedCodes, setRevealedCodes] = useState<Set<string>>(() => new Set());
   // Ticks every second so interpolation elapsed / ETA count up smoothly between
   // the 4s catalog polls.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -245,7 +252,7 @@ export function AdminObservability() {
           <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-violet-200/70"><Radio className="h-3.5 w-3.5" /> Watch-party control room</span>
           <span className="text-[11px] text-white/40">{partyRooms.filter((room) => room.state === "live").length} live · {partyRooms.length} total</span>
         </div>
-        {!partyRooms.length ? <p className="px-4 py-6 text-center text-sm text-white/40">No watch parties created yet.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs"><thead className="bg-black/10 text-[9px] uppercase tracking-wider text-white/35"><tr><th className="px-4 py-2.5">Presentation</th><th className="px-4 py-2.5">State</th><th className="px-4 py-2.5">Audience</th><th className="px-4 py-2.5">Viewer diagnostics</th><th className="px-4 py-2.5">Broadcast position</th><th className="px-4 py-2.5">Scheduled</th></tr></thead><tbody className="divide-y divide-white/[.06]">{partyRooms.map((room) => <tr key={room.room_id} className="align-top"><td className="px-4 py-3"><b className="block max-w-[240px] truncate text-white">{room.title}</b><span className="font-mono text-[9px] text-white/35">code ••••••{room.room_id.slice(-4)}</span></td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${room.state === "live" ? "bg-emerald-500/15 text-emerald-300" : room.state === "ended" ? "bg-white/10 text-white/40" : "bg-violet-500/15 text-violet-300"}`}>{room.state}</span></td><td className="px-4 py-3 tabular-nums text-white/70">{room.participants ?? 0} joined · {room.ready_participants ?? 0} ready</td><td className="px-4 py-3"><div className="grid max-h-24 gap-1 overflow-auto">{(room.participant_details ?? []).map((viewer) => <span key={viewer.viewer_id} className="whitespace-nowrap text-[9px] text-white/45"><b className="text-white/70">{viewer.name}</b> · {viewer.country} · #{viewer.ip_hash} · {viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps</span>)}{!(room.participant_details?.length) && <span className="text-[9px] text-white/30">No connected viewers</span>}</div></td><td className="px-4 py-3 font-mono tabular-nums text-white/70">{fmtDur(room.position_seconds ?? 0)}</td><td className="px-4 py-3 text-white/50">{room.starts_at ? new Date(room.starts_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div>}
+        {!partyRooms.length ? <p className="px-4 py-6 text-center text-sm text-white/40">No watch parties created yet.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[940px] text-left text-xs"><thead className="bg-black/10 text-[9px] uppercase tracking-wider text-white/35"><tr><th className="px-4 py-2.5">Presentation</th><th className="px-4 py-2.5">State</th><th className="px-4 py-2.5">Audience</th><th className="px-4 py-2.5">Viewer diagnostics</th><th className="px-4 py-2.5">Broadcast position</th><th className="px-4 py-2.5">Timeline</th></tr></thead><tbody className="divide-y divide-white/[.06]">{partyRooms.map((room) => { const revealed = revealedCodes.has(room.room_id); const finishedLabel = room.completion_reason === "cancelled" ? "Cancelled" : room.completion_reason === "ended_by_admin" ? "Ended by admin" : "Completed"; return <tr key={room.room_id} className="align-top"><td className="px-4 py-3"><b className="block max-w-[240px] truncate text-white">{room.title}</b><button type="button" className="mt-1 inline-flex items-center gap-1 font-mono text-[9px] text-white/40 hover:text-violet-200" onClick={() => setRevealedCodes((current) => { const next = new Set(current); if (next.has(room.room_id)) next.delete(room.room_id); else next.add(room.room_id); return next; })}>{revealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}code {revealed ? room.room_id : `••••••${room.room_id.slice(-4)}`}</button></td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${room.state === "live" ? "bg-emerald-500/15 text-emerald-300" : room.state === "ended" ? "bg-sky-500/10 text-sky-200/70" : "bg-violet-500/15 text-violet-300"}`}>{room.state === "ended" ? finishedLabel : room.state}</span></td><td className="px-4 py-3 tabular-nums text-white/70">{room.participants ?? 0} joined · {room.ready_participants ?? 0} ready</td><td className="px-4 py-3"><div className="grid max-h-24 gap-1 overflow-auto">{(room.participant_details ?? []).map((viewer) => <span key={viewer.viewer_id} className="whitespace-nowrap text-[9px] text-white/45"><b className="text-white/70">{viewer.name}</b> · {viewer.country} · #{viewer.ip_hash} · {viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps</span>)}{!(room.participant_details?.length) && <span className="text-[9px] text-white/30">No connected viewers</span>}</div></td><td className="px-4 py-3 font-mono tabular-nums text-white/70">{fmtDur(room.position_seconds ?? 0)}</td><td className="px-4 py-3 text-[10px] leading-5 text-white/50"><span className="block"><b className="text-white/30">{room.completion_reason === "cancelled" ? "Scheduled" : "Started"}</b> · {fmtPartyTime(room.starts_at)}</span><span className="block"><b className="text-white/30">Ended</b> · {room.state === "ended" ? fmtPartyTime(room.ended_at) : "—"}</span></td></tr>; })}</tbody></table></div>}
       </div>
 
       {/* Transcode jobs — live encode progress from the catalog (upload-api) */}
