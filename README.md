@@ -31,6 +31,7 @@
 16. [Local development](#16-local-development)
 17. [Repository structure](#17-repository-structure)
 18. [Roadmap](#18-roadmap)
+19. [Code-gated watch parties](#19-code-gated-watch-parties)
 
 ---
 
@@ -537,6 +538,8 @@ video-streaming-sre/
 │   │       └── main.py        # SQS loop + startup reconciler
 │   ├── origin/              # nginx origin: serve/cache manifests + segments
 │   ├── beacon-collector/    # QoE telemetry ingest
+│   ├── party-service/       # Room lifecycle, codes, presence, chat, media authorization
+│   ├── gateway/             # Public read boundary + gated HLS reverse proxy
 │   └── relay-ingress/       # Laptop B: verified HLS/CMAF artifact intake only
 ├── frontend/                # Next.js 15 player UI + admin studio (hls.js)
 ├── infra/terraform/         # Optional IaC reference for AWS-compatible deployments
@@ -573,7 +576,7 @@ Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 - [x] Per-title admin studio + dashboard + self-healing reconciler
 - [x] Live FPS / dropped-frame QoE
 - [ ] Real auth (JWT / RBAC / audit log) in place of HTTP Basic
-- [ ] Admin QoE/observability dashboard sourced from the beacon collector
+- [x] Admin QoE and per-room watch-party observability
 - [ ] Viewer accounts: resume / continue-watching / My List
 - [ ] Durable queue (move SQS off the in-memory emulator)
 - [ ] Cloud deploy (ECS + CloudFront)
@@ -583,5 +586,42 @@ Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 Single-node Cloudflared setup and 10-digit guest-code parties are documented in
 [`docs/cloudflared-watch-party.md`](docs/cloudflared-watch-party.md).
 - [ ] Optional WebRTC voice and measured peer-assisted segment delivery
+
+---
+
+## 19. Code-gated watch parties
+
+The deployed viewer is a static/public frontend, but media is not public. An
+admin creates an immediate or scheduled room and shares its random 10-digit
+code. Redeeming that code issues a short-lived token bound to one room and one
+title. Nginx checks the token with `party-service` for every manifest and media
+segment, so a copied HLS URL cannot bypass the room gate.
+
+```mermaid
+flowchart LR
+    A["Local admin studio"] -->|"create / schedule / end"| P["party-service"]
+    P --> D[("DynamoDB-local\nroom lifecycle")]
+    A -->|"share 10-digit code"| V["Hosted viewer frontend"]
+    V -->|"redeem code"| P
+    P -->|"room + scoped token"| V
+    V -->|"Bearer token + HLS request"| G["public gateway"]
+    G -->|"auth_request"| P
+    G -->|"authorized only"| O["Nginx origin"]
+    O --> S[("CMAF / HLS segments")]
+    P <-->|"WebSocket: presence, chat, state"| V
+```
+
+The authoritative server clock controls the shared presentation. Guests cannot
+pause, seek, or change playback speed; volume, captions, quality, and fullscreen
+remain device-local. Rooms automatically complete at the title duration, while
+an admin can cancel a scheduled room or end a live one early. Ended rooms revoke
+media access and show a terminal message to connected viewers.
+
+The admin control room provides title/code/state search, a bounded scrollable
+table, masked invite codes, audience counts, and per-stream inspection for
+viewer drift, reported bitrate, hashed client identifiers, and recent room
+events. See the complete deployment, operations, and capacity guide in
+[`docs/cloudflared-watch-party.md`](docs/cloudflared-watch-party.md), and the
+expanded component diagram in [`docs/architecture.md`](docs/architecture.md).
 
 <div align="center"><sub>Built as an SRE portfolio project — local-first, GPU-accelerated, and instrumented end to end.</sub></div>
