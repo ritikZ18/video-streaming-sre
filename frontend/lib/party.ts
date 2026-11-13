@@ -7,6 +7,8 @@ export type PartyRoom = {
   title: string;
   state: "waiting" | "scheduled" | "live" | string;
   starts_at?: string;
+  ends_at?: number;
+  duration_seconds?: number;
   position_seconds: number;
   playing: boolean;
   version: number;
@@ -21,7 +23,7 @@ export type PartyMessage =
   | { type: "room_state"; room: PartyRoom }
   | { type: "presence"; name: string; count: number }
   | { type: "chat"; name: string; text: string }
-  | { type: "ended" }
+  | { type: "ended"; ended_at?: number }
   | { type: "playback"; position_seconds: number; playing: boolean; version: number };
 
 function gatewayBase(): string {
@@ -71,7 +73,7 @@ export async function fetchPartyAdminStats(): Promise<PartyAdminStats> {
   return response.json();
 }
 
-export async function createPartyRoom(input: { movie_id: string; title: string; starts_at?: string }): Promise<{ code: string; host_token: string; room: PartyRoom }> {
+export async function createPartyRoom(input: { movie_id: string; title: string; starts_at?: string; duration_seconds: number }): Promise<{ code: string; host_token: string; room: PartyRoom }> {
   const response = await fetch(`${gatewayBase()}/api/party/rooms`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeader() },
