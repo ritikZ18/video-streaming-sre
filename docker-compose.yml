@@ -196,12 +196,14 @@ services:
       context: ./services/party-service
       dockerfile: Dockerfile
     container_name: streamsre-party-service
-    profiles: [relay]
+    profiles: [relay, tunnel]
     env_file: .env
     environment:
       <<: *aws-local
       PARTY_TABLE: ${PARTY_TABLE:-streamsre-parties}
       PARTY_ADMIN_TOKEN: ${PARTY_ADMIN_TOKEN:?PARTY_ADMIN_TOKEN must be set}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
     depends_on:
       dynamodb-local:
         condition: service_started
@@ -224,6 +226,7 @@ services:
       - upload-api
       - origin
       - beacon-collector
+      - party-service
     ports:
       - "127.0.0.1:8088:8088"   # host access to eyeball the public surface locally
 

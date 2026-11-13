@@ -1,4 +1,5 @@
 import { backendBase } from "./backend";
+import { authHeader } from "./auth";
 
 export type PartyRoom = {
   room_id: string;
@@ -22,22 +23,31 @@ function gatewayBase(): string {
 }
 
 export function relayMediaUrl(movieId: string): string {
-  return `${gatewayBase()}/relay/${encodeURIComponent(movieId)}/master.m3u8`;
+  return `${gatewayBase()}/hls/${encodeURIComponent(movieId)}/master.m3u8`;
 }
 
-export async function fetchPartyRoom(roomId: string, inviteToken: string): Promise<PartyRoom> {
-  const params = new URLSearchParams({ invite_token: inviteToken });
-  const response = await fetch(`${gatewayBase()}/api/party/rooms/${encodeURIComponent(roomId)}?${params}`, {
+export async function fetchPartyRoom(roomId: string): Promise<PartyRoom> {
+  const response = await fetch(`${gatewayBase()}/api/party/rooms/${encodeURIComponent(roomId)}`, {
     cache: "no-store",
   });
   if (!response.ok) throw new Error(response.status === 404 ? "This invite is no longer valid." : "Could not join this room.");
   return (await response.json()) as PartyRoom;
 }
 
-export function partySocketUrl(roomId: string, inviteToken: string, name: string): string {
+export function partySocketUrl(roomId: string, name: string): string {
   const base = new URL(gatewayBase());
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
   base.pathname = `/ws/party/${encodeURIComponent(roomId)}`;
-  base.search = new URLSearchParams({ invite_token: inviteToken, name }).toString();
+  base.search = new URLSearchParams({ name }).toString();
   return base.toString();
+}
+
+export async function createPartyRoom(input: { movie_id: string; title: string; starts_at?: string }): Promise<{ code: string; host_token: string; room: PartyRoom }> {
+  const response = await fetch(`${gatewayBase()}/api/party/rooms`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeader() },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(response.status === 401 ? "Admin sign-in expired." : "Could not create the watch party.");
+  return response.json();
 }

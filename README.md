@@ -577,7 +577,10 @@ Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 - [ ] Durable queue (move SQS off the in-memory emulator)
 - [ ] Cloud deploy (ECS + CloudFront)
 - [ ] Laptop B relay mode with sandboxed artifact-only media delivery
-- [ ] Watch-party rooms, synchronized playback, chat, and scheduled premieres
+- [x] Code-gated watch-party rooms, chat, and scheduled premieres
+
+Single-node Cloudflared setup and 10-digit guest-code parties are documented in
+[`docs/cloudflared-watch-party.md`](docs/cloudflared-watch-party.md).
 - [ ] Optional WebRTC voice and measured peer-assisted segment delivery
 
 <div align="center"><sub>Built as an SRE portfolio project — local-first, GPU-accelerated, and instrumented end to end.</sub></div>

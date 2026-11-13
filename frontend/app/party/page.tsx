@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
+  CalendarClock,
   Check,
   Copy,
   Loader2,
@@ -30,18 +31,18 @@ export default function PartyPage() {
   const [name, setName] = useState("Guest");
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [codeInput, setCodeInput] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
   const chatId = useRef(0);
 
   const query = useMemo(() => {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
-    return { roomId: params.get("room"), inviteToken: params.get("invite") };
+    return { roomId: params.get("code") ?? params.get("room") };
   }, []);
 
   useEffect(() => {
-    if (!query?.roomId || !query.inviteToken) {
-      setError("This theater link is missing a room or invite token.");
+    if (!query?.roomId) {
       setLoading(false);
       return;
     }
@@ -50,11 +51,11 @@ export default function PartyPage() {
     setName(guestName);
 
     let active = true;
-    void fetchPartyRoom(query.roomId, query.inviteToken)
+    void fetchPartyRoom(query.roomId)
       .then((loadedRoom) => {
         if (!active) return;
         setRoom(loadedRoom);
-        const socket = new WebSocket(partySocketUrl(query.roomId!, query.inviteToken!, guestName));
+        const socket = new WebSocket(partySocketUrl(query.roomId!, guestName));
         socketRef.current = socket;
         socket.onopen = () => setConnected(true);
         socket.onclose = () => setConnected(false);
@@ -77,6 +78,13 @@ export default function PartyPage() {
       socketRef.current = null;
     };
   }, [query]);
+
+  function joinWithCode(event: FormEvent) {
+    event.preventDefault();
+    const code = codeInput.replace(/\D/g, "").slice(0, 10);
+    if (code.length !== 10) return;
+    window.location.assign(`/party?code=${code}`);
+  }
 
   useEffect(() => {
     if (room?.state !== "scheduled" || !room.starts_at) return;
@@ -102,6 +110,28 @@ export default function PartyPage() {
     return <div className={styles.loading}><Loader2 className="h-6 w-6 animate-spin" /> Entering the theater...</div>;
   }
 
+  if (!query?.roomId) {
+    return (
+      <main className={styles.errorPage}>
+        <form className={styles.errorPanel} onSubmit={joinWithCode}>
+          <ShieldCheck className="h-6 w-6 text-indigo-300" />
+          <h1>Join a watch party</h1>
+          <p>Enter the 10-digit code shared by the host.</p>
+          <input
+            value={codeInput}
+            onChange={(event) => setCodeInput(event.target.value.replace(/\D/g, "").slice(0, 10))}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="0000000000"
+            aria-label="Watch party code"
+            className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-center font-mono text-xl tracking-[0.25em] text-white outline-none focus:border-indigo-400"
+          />
+          <button type="submit" className={styles.primaryButton} disabled={codeInput.length !== 10}>Join theater</button>
+        </form>
+      </main>
+    );
+  }
+
   if (error || !room) {
     return (
       <main className={styles.errorPage}>
@@ -115,7 +145,7 @@ export default function PartyPage() {
     );
   }
 
-  const syncLabel = room.playing ? "Synchronized playback" : "Waiting for the host";
+  const syncLabel = connected ? "Party room connected" : "Reconnecting";
   const premiereMs = room.starts_at ? Math.max(0, new Date(room.starts_at).getTime() - now) : 0;
   const premiereSeconds = Math.floor(premiereMs / 1000);
   const premiereParts = {
@@ -140,7 +170,15 @@ export default function PartyPage() {
         <div className={styles.stageColumn}>
           <div className={styles.eyebrow}><span className={styles.liveDot} /> Private watch party <span className={styles.divider} /> {room.state === "scheduled" ? "Premiere scheduled" : "Room active"}</div>
           <div className={styles.playerFrame}>
-            <VideoPlayer src={relayMediaUrl(room.movie_id)} title={room.title} contentId={room.movie_id} />
+            {room.state === "scheduled" && premiereMs > 0 ? (
+              <div className="flex aspect-video h-full w-full flex-col items-center justify-center bg-black text-center">
+                <CalendarClock className="mb-3 h-8 w-8 text-indigo-300" />
+                <p className="font-semibold text-white">The stream opens at the scheduled time</p>
+                <p className="mt-1 text-sm text-white/50">Keep this page open; the player will appear automatically.</p>
+              </div>
+            ) : (
+              <VideoPlayer src={relayMediaUrl(room.movie_id)} title={room.title} contentId={room.movie_id} />
+            )}
           </div>
           <div className={styles.titleRow}>
             <div>
@@ -156,11 +194,11 @@ export default function PartyPage() {
                   <b>:</b>
                   <span>{String(premiereParts.seconds).padStart(2, "0")}<small>sec</small></span>
                 </div>
-              ) : <p className={styles.subtitle}>Relay stream · room {room.room_id}</p>}
+              ) : <p className={styles.subtitle}>Private stream · code {room.room_id}</p>}
             </div>
-            <div className={styles.syncBadge}><ShieldCheck className="h-4 w-4" /><span>{syncLabel}<small>Host clock is authoritative</small></span></div>
+            <div className={styles.syncBadge}><ShieldCheck className="h-4 w-4" /><span>{syncLabel}<small>Chat and room state are live</small></span></div>
           </div>
-          <div className={styles.statsStrip}><div><strong><Users className="h-4 w-4" />{people}</strong><span>watching now</span></div><div><strong><Wifi className="h-4 w-4" />1080p</strong><span>adaptive relay</span></div><div><strong>24 ms</strong><span>room latency</span></div></div>
+          <div className={styles.statsStrip}><div><strong><Users className="h-4 w-4" />{people}</strong><span>watching now</span></div><div><strong><Wifi className="h-4 w-4" />Adaptive</strong><span>Cloudflare tunnel</span></div><div><strong>{room.room_id}</strong><span>party code</span></div></div>
         </div>
 
         <aside className={styles.sidebar}>

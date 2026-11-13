@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import base64
 import hashlib
-import json
 import secrets
 import time
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 import boto3
@@ -22,6 +23,8 @@ class Settings(BaseSettings):
     dynamodb_endpoint_url: str = "http://dynamodb-local:8000"
     party_table: str = "streamsre-parties"
     party_admin_token: str = Field(min_length=32)
+    admin_username: str = Field(min_length=1)
+    admin_password: str = Field(min_length=1)
     party_max_participants: int = Field(default=20, ge=2, le=100)
 
 
@@ -33,7 +36,7 @@ connections: dict[str, set[WebSocket]] = defaultdict(set)
 class CreateRoom(BaseModel):
     movie_id: str = Field(min_length=3, max_length=96, pattern=r"^[a-zA-Z0-9_-]+$")
     title: str = Field(min_length=1, max_length=160)
-    starts_at: str | None = None
+    starts_at: datetime | None = None
 
 
 def table():
@@ -67,8 +70,13 @@ def digest(value: str) -> str:
 
 
 def require_admin(authorization: str | None) -> None:
-    expected = f"Bearer {settings.party_admin_token}"
-    if not authorization or not secrets.compare_digest(authorization, expected):
+    bearer = f"Bearer {settings.party_admin_token}"
+    basic = "Basic " + base64.b64encode(
+        f"{settings.admin_username}:{settings.admin_password}".encode()
+    ).decode()
+    if not authorization or not any(
+        secrets.compare_digest(authorization, expected) for expected in (bearer, basic)
+    ):
         raise HTTPException(status_code=401, detail="Party admin authorization required")
 
 
@@ -104,38 +112,48 @@ def health() -> dict[str, str]:
 @app.post("/v1/rooms", status_code=201)
 def create_room(request: CreateRoom, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_admin(authorization)
-    room_id = secrets.token_urlsafe(9)
-    invite_token = secrets.token_urlsafe(24)
+    # A fixed-width, cryptographically random code is easy to type on a TV or
+    # phone. Conditional insertion makes the already unlikely collision safe.
+    room_id = ""
     host_token = secrets.token_urlsafe(32)
-    item = {
-        "room_id": room_id,
-        "movie_id": request.movie_id,
-        "title": request.title,
-        "state": "scheduled" if request.starts_at else "waiting",
-        "starts_at": request.starts_at or "",
-        "position_seconds": 0,
-        "playing": False,
-        "version": 0,
-        "invite_hash": digest(invite_token),
-        "host_hash": digest(host_token),
-        "created_at": int(time.time()),
-    }
-    table().put_item(Item=item)
-    return {"room_id": room_id, "invite_token": invite_token, "host_token": host_token, "room": public_room(item)}
+    for _ in range(8):
+        room_id = f"{secrets.randbelow(10_000_000_000):010d}"
+        item = {
+            "room_id": room_id,
+            "movie_id": request.movie_id,
+            "title": request.title,
+            "state": "scheduled" if request.starts_at else "waiting",
+            "starts_at": request.starts_at.isoformat() if request.starts_at else "",
+            "position_seconds": 0,
+            "playing": False,
+            "version": 0,
+            "host_hash": digest(host_token),
+            "created_at": int(time.time()),
+        }
+        try:
+            table().put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(room_id)",
+            )
+            return {"code": room_id, "host_token": host_token, "room": public_room(item)}
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+    raise HTTPException(status_code=503, detail="Could not allocate a party code")
 
 
 @app.get("/v1/rooms/{room_id}")
-def get_room(room_id: str, invite_token: str) -> dict[str, Any]:
+def get_room(room_id: str) -> dict[str, Any]:
     item = room_item(room_id)
-    if not item or not secrets.compare_digest(invite_token, item.get("invite_hash", "")):
+    if not item:
         raise HTTPException(status_code=404, detail="Room not found")
     return public_room(item)
 
 
 @app.websocket("/ws/rooms/{room_id}")
-async def room_socket(websocket: WebSocket, room_id: str, invite_token: str, name: str = "Guest") -> None:
+async def room_socket(websocket: WebSocket, room_id: str, name: str = "Guest") -> None:
     item = room_item(room_id)
-    if not item or not secrets.compare_digest(invite_token, item.get("invite_hash", "")):
+    if not item:
         await websocket.close(code=1008)
         return
     if len(connections[room_id]) >= settings.party_max_participants:
