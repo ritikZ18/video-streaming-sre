@@ -5,16 +5,32 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        // Keep builds offline-safe; use the platform UI font stack without a
-        // build-time Google Fonts download.
+        // Offline-safe Apple-style UI stack. Never lead with an undefined CSS
+        // variable: an unresolved var() invalidates the complete declaration
+        // and makes browsers fall back to their default serif face.
         sans: [
-          "var(--font-inter)",
+          "ui-sans-serif",
           "-apple-system",
           "BlinkMacSystemFont",
+          '"SF Pro Display"',
+          '"SF Pro Text"',
+          '"Segoe UI Variable"',
           '"Segoe UI"',
+          '"Avenir Next"',
+          "Inter",
           "Roboto",
           "Helvetica",
           "Arial",
+          "sans-serif",
+        ],
+        // Use for editorial/hero moments that benefit from Poppins-like round,
+        // geometric forms while retaining platform-native fallbacks.
+        display: [
+          '"Avenir Next"',
+          '"Segoe UI Variable Display"',
+          '"SF Pro Display"',
+          "Inter",
+          "ui-sans-serif",
           "sans-serif",
         ],
       },
@@ -41,9 +57,9 @@ export default {
         "ink-3": "rgba(255,255,255,0.40)",
       },
       letterSpacing: {
-        display: "-0.03em", // hero titles
-        heading: "-0.02em", // section headings
-        bodytight: "-0.01em", // body / meta
+        display: "-0.035em", // hero titles
+        heading: "-0.022em", // section headings
+        bodytight: "-0.008em", // body / meta
       },
       borderRadius: {
         card: "0.9rem",
