@@ -73,6 +73,14 @@ export async function fetchPartyAdminStats(): Promise<PartyAdminStats> {
   return response.json();
 }
 
+export async function endPartyRoom(roomId: string): Promise<void> {
+  const response = await fetch(`${gatewayBase()}/api/party/admin/rooms/${encodeURIComponent(roomId)}/end`, {
+    method: "POST",
+    headers: authHeader(),
+  });
+  if (!response.ok) throw new Error(response.status === 401 ? "Admin sign-in expired." : "Could not end this watch party.");
+}
+
 export async function createPartyRoom(input: { movie_id: string; title: string; starts_at?: string; duration_seconds: number }): Promise<{ code: string; host_token: string; room: PartyRoom }> {
   const response = await fetch(`${gatewayBase()}/api/party/rooms`, {
     method: "POST",
