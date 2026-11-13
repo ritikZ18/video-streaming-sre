@@ -1,15 +1,15 @@
 # Infrastructure: Terraform + floci (local AWS)
 
-This project targets AWS (S3 for storage, SQS for the transcode queue) but runs
-**entirely locally, at zero cost**, against **floci** — a LocalStack-compatible
-AWS emulator. The same Terraform and the same application code would run against
-real AWS by changing only the endpoint/credentials.
+This document describes the optional AWS-compatible infrastructure path. The
+default local deployment uses persistent MinIO and DynamoDB-local services from
+`docker-compose.yml`; Floci and Terraform are retained for compatibility and
+experiments against an AWS-shaped API.
 
 ---
 
 ## 0. Storage durability: persistent vs ephemeral (read this first)
 
-floci is **in-memory** — every restart of floci (or the host/Docker) wipes it.
+The legacy Floci path is **in-memory** — every restart of Floci (or the host/Docker) wipes it.
 That is fine for a transient queue, but it also erased uploaded videos and their
 catalog. So the **durable** state is deliberately kept **out of floci**, in
 persistent local services with Docker volumes, and only the throwaway SQS queue

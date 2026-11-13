@@ -25,7 +25,7 @@ export {
 };
 
 // Keep in sync with upload-api MAX_UPLOAD_SIZE_MB.
-export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 5000);
+export const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 10000);
 
 export type BeaconEvent = {
   event: "startup" | "rebuffer" | "bitrate_switch" | "error" | "heartbeat";
@@ -416,6 +416,15 @@ export async function retranscodeMovie(movieId: string): Promise<void> {
   if (res.status === 401) throw new Error("Not authorized — log in as admin.");
   if (res.status === 409) throw new Error("Original source is gone — re-upload to re-transcode.");
   if (!res.ok && res.status !== 202) throw new Error(`re-transcode failed: ${res.status}`);
+}
+
+export async function publishMovieToRelay(movieId: string): Promise<{ status: string }> {
+  const res = await fetch(`${apiUrl()}/api/v1/movies/${encodeURIComponent(movieId)}/relay`, {
+    method: "POST",
+    headers: { ...authHeader() },
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || `Relay publish failed: ${res.status}`);
+  return (await res.json()) as { status: string };
 }
 
 /** Add a NON-destructive smoothed (interpolated) rendition to a title via I/O

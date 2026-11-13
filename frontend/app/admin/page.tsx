@@ -9,6 +9,7 @@ import { UploadQueue } from "../../components/upload/UploadQueue";
 import { AdminMovieForm } from "../../components/upload/AdminMovieForm";
 import { AdminCatalog } from "../../components/admin/AdminCatalog";
 import { AdminObservability } from "../../components/admin/AdminObservability";
+import { WatchPartyManager } from "../../components/admin/WatchPartyManager";
 import { adminLogin } from "../../lib/api";
 import { VIEWER_ONLY } from "../../lib/backend";
 import { isAuthed, clearAdminToken } from "../../lib/auth";
@@ -198,6 +199,7 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
             <UploadQueue files={files} onClear={() => setFiles([])} />
           </div>
           <AdminMovieForm />
+          <WatchPartyManager />
           <div className="mt-4">
             <AdminCatalog />
           </div>

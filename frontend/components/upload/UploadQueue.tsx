@@ -12,7 +12,9 @@ type ItemStatus = "queued" | "uploading" | "transcoding" | "ready" | "error";
 
 type QItem = {
   id: string;
-  file: File;
+  file: File | null;
+  fileName: string;
+  fileSize: number;
   title: string;
   year: string;
   status: ItemStatus;
@@ -41,6 +43,8 @@ function makeItem(file: File): QItem {
   return {
     id: keyFor(file),
     file,
+    fileName: file.name,
+    fileSize: file.size,
     title: p.title || file.name,
     year: p.year ? String(p.year) : "2025",
     status: "queued",
@@ -81,6 +85,50 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
   itemsRef.current = items;
   const runningRef = useRef(false);
   const processedRef = useRef<Set<string>>(new Set());
+  const storageKey = "streamsre.upload.queue";
+  const hydratedRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]") as Array<Partial<QItem>>;
+      const restored = saved
+        .filter((item) => item.id && item.jobId && item.status === "transcoding")
+        .map((item) => ({
+          ...item,
+          file: null,
+          fileName: item.fileName ?? "Uploaded source",
+          fileSize: item.fileSize ?? 0,
+          status: "transcoding" as ItemStatus,
+        })) as QItem[];
+      if (restored.length) setItems(restored);
+    } catch {
+      window.localStorage.removeItem(storageKey);
+    }
+    hydratedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const persisted = items
+      .filter((item) => item.status === "transcoding" || item.status === "ready")
+      .map((item) => {
+        const persistedItem = { ...item };
+        delete persistedItem.file;
+        return persistedItem;
+      });
+    window.localStorage.setItem(storageKey, JSON.stringify(persisted));
+  }, [items]);
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (itemsRef.current.some((item) => item.status === "uploading" || item.status === "queued")) {
+        event.preventDefault();
+        event.returnValue = "An upload is still in progress.";
+      }
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
 
   const update = useCallback((id: string, patch: Partial<QItem>) => {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -129,8 +177,15 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
         }
         existingRef.current.add(dupKey);
 
+        if (!it.file) {
+          update(it.id, { status: "error", error: "Source file is no longer available; choose it again to retry." });
+          window.alert(`${it.fileName} cannot resume after a browser reload. Choose the source file again to retry.`);
+          continue;
+        }
+
         if (it.file.size > MAX_UPLOAD_MB * 1024 * 1024) {
           update(it.id, { status: "error", error: `Too large (max ${MAX_UPLOAD_MB} MB)` });
+          window.alert(`${it.file.name} is too large. Maximum upload size is ${MAX_UPLOAD_MB} MB.`);
           continue;
         }
         update(it.id, { status: "uploading", uploadPct: 0 });
@@ -152,6 +207,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
           update(it.id, { status: "transcoding", jobId: res.job_id, uploadPct: 100 });
         } catch (e) {
           update(it.id, { status: "error", error: (e as Error).message });
+          window.alert(`Upload failed for ${it.file.name}: ${(e as Error).message}`);
         }
       }
     } finally {
@@ -216,6 +272,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
     processedRef.current = new Set();
     setStarted(false);
     setItems([]);
+    window.localStorage.removeItem(storageKey);
     onClear();
   };
 
@@ -322,7 +379,7 @@ export function UploadQueue({ files, onClear }: UploadQueueProps) {
                   <div className="truncate text-sm font-semibold text-white">{it.title}</div>
                 )}
                 <div className="truncate text-[11px] text-white/45">
-                  {it.file.name} · {(it.file.size / (1024 * 1024)).toFixed(0)} MB
+                  {it.fileName} · {(it.fileSize / (1024 * 1024)).toFixed(0)} MB
                 </div>
               </div>
               <div className="w-32 shrink-0 text-right text-[11px] text-white/60">

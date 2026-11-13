@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     )
     s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
 
+    # Optional Laptop B relay destination. Empty keeps standalone mode unchanged.
+    relay_server_url: str | None = Field(default=None, alias="RELAY_SERVER_URL")
+    relay_ingress_token: str | None = Field(default=None, alias="RELAY_INGRESS_TOKEN")
+
     # DynamoDB (catalog)
     dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
     dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
@@ -33,12 +37,12 @@ class Settings(BaseSettings):
     queue_table: str = Field(default="streamsre-transcode-queue", alias="QUEUE_TABLE")
 
     # Admin auth (gates the write endpoints: upload + create movie)
-    admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
-    admin_password: str = Field(default="admin", alias="ADMIN_PASSWORD")
+    admin_username: str = Field(alias="ADMIN_USERNAME")
+    admin_password: str = Field(alias="ADMIN_PASSWORD")
 
     # Upload behaviour
     upload_api_port: int = Field(default=8000, alias="UPLOAD_API_PORT")
-    max_upload_size_mb: int = Field(default=5000, alias="MAX_UPLOAD_SIZE_MB")
+    max_upload_size_mb: int = Field(default=10000, alias="MAX_UPLOAD_SIZE_MB")
     allowed_extensions: str = Field(default="mp4,mov,mkv,webm", alias="ALLOWED_EXTENSIONS")
     rate_limit_per_minute: int = Field(default=60, alias="RATE_LIMIT_PER_MINUTE")
 

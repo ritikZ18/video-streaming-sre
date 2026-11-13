@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # One-command bring-up for the whole platform:
-#   floci (local AWS emulator)  ->  Terraform infra  ->  Docker Compose services
+#   Docker Compose storage + services + observability
 #
 # Usage:
-#   ./start.sh                  # start floci + infra + services
+#   ./start.sh                  # start storage + services
 #   ./start.sh --seed           # also push a generated demo video through the pipeline
 #   ./start.sh --queue-clear     # purge ORPHAN transcode jobs (no catalog row) that
 #                                # grind in the background without showing on the UI
@@ -13,23 +13,46 @@
 #   ./start.sh --tunnel          # publish the backend via a Cloudflare quick tunnel,
 #                                # verify it serves, and print the ?api= viewer link
 #                                # (set VIEWER_URL to your Render frontend URL)
+#   ./start.sh --help            # show this help and exit
+#   ./start.sh --restart         # stop the stack, rebuild images, and start again
 #
-# Override the floci control script location if yours lives elsewhere:
-#   FLOCI=/path/to/floci.sh ./start.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-FLOCI="${FLOCI:-$HOME/floci-stack/floci.sh}"
-ENDPOINT="http://localhost:4566"
-FLOCI_HEALTH="${ENDPOINT}/_floci/health"
-
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
-floci_up() {
-  curl -fsS "$FLOCI_HEALTH" >/dev/null 2>&1
-}
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  cat <<'EOF'
+StreamSRE startup
+
+Usage:
+  ./start.sh                  Start storage, services, and observability.
+  ./start.sh --seed           Start the stack and seed a demo video.
+  ./start.sh --queue-clear    Remove orphaned transcode jobs.
+  ./start.sh --queue-clear all
+                              Remove every queued transcode job.
+  ./start.sh --tunnel         Start the optional Cloudflare quick tunnel.
+  ./start.sh --restart        Stop, rebuild, and start the local stack.
+  ./start.sh --help           Show this help.
+
+Environment:
+  Configure .env from .env.example before starting. Admin, Grafana, and
+  public relay credentials must not use the example placeholders.
+
+Common relay commands:
+  docker compose -f docker-compose.yml -f docker-compose.relay.yml \
+    --profile relay up -d --build
+EOF
+  exit 0
+fi
+
+if [[ "${1:-}" == "--restart" ]]; then
+  log "Stopping the current stack"
+  docker compose down --remove-orphans
+  exec "$0"
+fi
 
 # 0) Queue maintenance -------------------------------------------------------
 # The durable job queue (DynamoDB) can hold "orphan" jobs whose catalog row was
@@ -149,43 +172,24 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
-# 2) floci (local AWS on :4566) ---------------------------------------------
-if floci_up; then
-  log "floci already running on ${ENDPOINT}"
-elif [ -f "$FLOCI" ]; then
-  log "Starting floci ($FLOCI)"
-  bash "$FLOCI" up
-else
-  echo "ERROR: floci control script not found at: $FLOCI" >&2
-  echo "Start your local AWS emulator on :4566, or re-run with FLOCI=/path/to/floci.sh" >&2
-  exit 1
-fi
+require_configured_secret() {
+  local name="$1"
+  local value
+  value="$(sed -n "s/^${name}=//p" .env | head -n 1)"
+  case "$value" in
+    ""|admin|change-this-*)
+      echo "ERROR: ${name} is missing or still uses the .env.example placeholder." >&2
+      echo "Set a unique value in .env before starting StreamSRE." >&2
+      exit 1
+      ;;
+  esac
+}
 
-log "Waiting for floci to be healthy on ${ENDPOINT}"
-for _ in $(seq 1 30); do
-  if floci_up; then break; fi
-  sleep 1
-done
-if ! floci_up; then
-  echo "ERROR: floci did not become healthy in time." >&2
-  exit 1
-fi
+require_configured_secret ADMIN_USERNAME
+require_configured_secret ADMIN_PASSWORD
+require_configured_secret GRAFANA_ADMIN_PASSWORD
 
-# 3) Infrastructure as code (S3 buckets + SQS queues + DynamoDB table) -------
-# Terraform is the "real" path; if it is not installed the services will
-# lazily self-create the same resources in floci on first use.
-if command -v terraform >/dev/null 2>&1; then
-  log "Provisioning infra with Terraform (S3 + SQS + DynamoDB)"
-  (
-    cd infra/terraform
-    terraform init -input=false >/dev/null
-    terraform apply -auto-approve
-  )
-else
-  log "Terraform not installed — services will self-create S3/SQS/DynamoDB on first use"
-fi
-
-# 4) GPU detection -----------------------------------------------------------
+# 2) GPU detection -----------------------------------------------------------
 # Use NVENC only if an NVIDIA GPU AND the docker nvidia runtime are both present.
 COMPOSE_ARGS=""
 detect_gpu() {
@@ -212,11 +216,29 @@ else
   log "No NVIDIA GPU detected -> CPU transcode"
 fi
 
-# 5) Application services -----------------------------------------------------
+# 3) Application services -----------------------------------------------------
 log "Building & starting services (docker compose)"
 docker compose $COMPOSE_ARGS up -d --build
 
-# 6) Optional demo seed ------------------------------------------------------
+wait_for_http() {
+  local name="$1"
+  local url="$2"
+  log "Waiting for ${name}"
+  for _ in $(seq 1 60); do
+    if curl -fsS -m 3 -o /dev/null "$url"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: ${name} did not become ready at ${url}." >&2
+  docker compose ps >&2
+  exit 1
+}
+
+wait_for_http "upload API" "http://127.0.0.1:8000/ready"
+wait_for_http "frontend" "http://127.0.0.1:3001/"
+
+# 4) Optional demo seed ------------------------------------------------------
 if [ "${1:-}" = "--seed" ]; then
   log "Seeding a generated demo video (waiting for the API to be ready)"
   sleep 8
@@ -237,5 +259,5 @@ Upload a video at http://localhost:3001/upload — it transcodes to HLS+DASH,
 appears on the home grid, and streams when you click it.
 
 Stop with:  ./stop.sh        (services only)
-            ./stop.sh --all  (also stop floci)
+            ./stop.sh --all  (also stop optional legacy Floci, if configured)
 EOF

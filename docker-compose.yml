@@ -7,8 +7,8 @@
 # All tables/buckets self-create in-app on first use, so there is no provisioning step.
 x-aws-local: &aws-local
   AWS_REGION: ${AWS_REGION:-us-east-1}
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
   S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
   DYNAMODB_ENDPOINT_URL: ${DYNAMODB_ENDPOINT_URL:-http://dynamodb-local:8000}
   DYNAMODB_TABLE: ${DYNAMODB_TABLE:-streamsre-catalog}
@@ -33,11 +33,11 @@ services:
     container_name: streamsre-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console (browse your objects at http://localhost:9001)
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console (browse your objects at http://localhost:9001)
     volumes:
       - minio_data:/data
 
@@ -51,8 +51,8 @@ services:
     depends_on:
       - minio
     environment:
-      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -84,12 +84,14 @@ services:
     env_file: .env
     environment:
       <<: *aws-local
+      RELAY_SERVER_URL: ${RELAY_SERVER_URL:-}
+      RELAY_INGRESS_TOKEN: ${RELAY_INGRESS_TOKEN:-}
       # Admin credentials gating the write endpoints (upload + create movie).
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
     depends_on: *storage-deps
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   # --- Transcode Worker ---
   transcode-worker:
@@ -102,8 +104,7 @@ services:
       <<: *aws-local
       # Browser-facing origin URL baked into stored manifest URLs.
       ORIGIN_BASE_URL: ${ORIGIN_BASE_URL:-http://localhost:8080}
-      # GPU encode: set USE_NVENC=1 AFTER installing nvidia-container-toolkit on
-      # the host and uncommenting the `deploy.resources` block below.
+      # GPU encode is enabled only by docker-compose.gpu.yml.
       USE_NVENC: ${USE_NVENC:-0}
     depends_on:
       <<: *storage-deps
@@ -111,15 +112,6 @@ services:
       # interpolation is requested, and falls back to native fps if it is down.
       io-framer:
         condition: service_started
-    # --- GPU (optional): uncomment once nvidia-container-toolkit is installed ---
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
   # --- I/O Framer (frame interpolation sidecar) ---
   # RIFE FPS boost over Vulkan. The worker calls it per job when interpolation is
   # requested. Defaults to the lavapipe CPU fallback; uncomment the GPU block to
@@ -140,7 +132,7 @@ services:
       # NVIDIA_DRIVER_CAPABILITIES: all
     depends_on: *storage-deps
     ports:
-      - "8090:8000"
+      - "127.0.0.1:8090:8000"
     # deploy:
     #   resources:
     #     reservations:
@@ -160,7 +152,7 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on: *storage-deps
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   # --- Beacon Collector ---
   beacon-collector:
@@ -170,9 +162,55 @@ services:
     container_name: streamsre-beacon-collector
     env_file: .env
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
-  # --- Public gateway + Cloudflare tunnel (opt-in: `--profile tunnel`) ---
+  # --- Laptop B artifact-only relay ingress -------------------------------
+  # This service accepts completed HLS/CMAF bundles only. It has no FFmpeg,
+  # ffprobe, GPU runtime, Docker socket, or database of its own.
+  relay-ingress:
+    build:
+      context: ./services/relay-ingress
+      dockerfile: Dockerfile
+    container_name: streamsre-relay-ingress
+    profiles: [relay]
+    env_file: .env
+    environment:
+      <<: *aws-local
+      RELAY_BUCKET: ${S3_SEGMENTS_BUCKET:-streamsre-hls-segments}
+      RELAY_INGRESS_TOKEN: ${RELAY_INGRESS_TOKEN:-}
+      RELAY_MAX_BUNDLE_MB: ${RELAY_MAX_BUNDLE_MB:-10240}
+    depends_on: *storage-deps
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - "8010"
+
+  # --- Watch-party state and WebSocket service -----------------------------
+  party-service:
+    build:
+      context: ./services/party-service
+      dockerfile: Dockerfile
+    container_name: streamsre-party-service
+    profiles: [relay, tunnel]
+    env_file: .env
+    environment:
+      <<: *aws-local
+      PARTY_TABLE: ${PARTY_TABLE:-streamsre-parties}
+      PARTY_ADMIN_TOKEN: ${PARTY_ADMIN_TOKEN:?PARTY_ADMIN_TOKEN must be set}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
+    depends_on:
+      dynamodb-local:
+        condition: service_started
+    expose:
+      - "8020"
+
+  # --- Public gateway + Cloudflare tunnel (opt-in: `--profile relay` or `tunnel`) ---
   # The gateway is the SINGLE tunnel target: it fans out to upload-api (reads
   # only), beacon-collector and origin by path, and refuses every write/admin
   # path. cloudflared publishes it over an OUTBOUND quick tunnel — no open port,
@@ -183,13 +221,14 @@ services:
       context: ./services/gateway
       dockerfile: Dockerfile
     container_name: streamsre-gateway
-    profiles: [tunnel]
+    profiles: [relay, tunnel]
     depends_on:
       - upload-api
       - origin
       - beacon-collector
+      - party-service
     ports:
-      - "8088:8088"   # host access to eyeball the public surface locally
+      - "127.0.0.1:8088:8088"   # host access to eyeball the public surface locally
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -217,11 +256,12 @@ services:
       - VITE_BEACON_URL=${VITE_BEACON_URL:-http://localhost:8001}
       - VITE_GRAFANA_URL=${VITE_GRAFANA_URL:-http://localhost:3000}
       - VITE_PROMETHEUS_URL=${VITE_PROMETHEUS_URL:-http://localhost:9090}
+      - NEXT_PUBLIC_MAX_UPLOAD_MB=${MAX_UPLOAD_SIZE_MB:-10000}
       # Server-side only — used by the /api/tmdb proxy route, never sent to the
       # browser. Runtime env (no rebuild needed to change it).
       - TMDB_API_KEY=${TMDB_API_KEY:-}
     ports:
-      - "3001:80"
+      - "127.0.0.1:3001:80"
     depends_on:
       - upload-api
       - origin
@@ -234,7 +274,7 @@ services:
       dockerfile: Dockerfile
     container_name: streamsre-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/prometheus/rules:/etc/prometheus/rules:ro
@@ -251,10 +291,10 @@ services:
     container_name: streamsre-grafana
     env_file: .env
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -270,7 +310,7 @@ services:
     container_name: streamsre-alertmanager
     env_file: .env
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     volumes:
       - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     depends_on:

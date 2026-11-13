@@ -26,6 +26,7 @@ import {
   retranscodeMovie,
   enhanceFps,
   enhanceFpsCopy,
+  publishMovieToRelay,
   getInterpConfig,
   deleteMovie,
   type InterpConfig,
@@ -85,6 +86,7 @@ export function AdminCatalog() {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState<Movie | null>(null);
+  const [relayBusy, setRelayBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
     listMovies()
@@ -92,6 +94,18 @@ export function AdminCatalog() {
       .catch(() => {})
       .finally(() => setLoaded(true));
   }, []);
+
+  async function sendToRelay(movie: Movie) {
+    setRelayBusy(movie.id);
+    try {
+      await publishMovieToRelay(movie.id);
+      window.alert(`${movie.title} was sent to Laptop B.`);
+    } catch (error) {
+      window.alert(`Relay publish failed: ${(error as Error).message}`);
+    } finally {
+      setRelayBusy(null);
+    }
+  }
 
   useEffect(() => {
     load();
@@ -208,6 +222,11 @@ export function AdminCatalog() {
                           >
                             <Play className="h-3 w-3 fill-current" /> Play
                           </a>
+                        )}
+                        {!processing && (
+                          <button type="button" onClick={() => void sendToRelay(m)} disabled={relayBusy === m.id} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50">
+                            {relayBusy === m.id ? "Sending…" : "Send to relay"}
+                          </button>
                         )}
                         <button
                           type="button"

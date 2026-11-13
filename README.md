@@ -109,7 +109,7 @@ flowchart LR
     subgraph Storage["Durable state"]
       MI["MinIO<br/>S3 objects"]
       DB["DynamoDB-local<br/>catalog"]
-      SQS["floci SQS<br/>job queue (ephemeral)"]
+      SQS["DynamoDB-local<br/>durable job queue"]
     end
 
     subgraph Obs["Observability"]
@@ -153,8 +153,7 @@ segments; the player streams them adaptively and reports how well it went.
 | **Origin** | `streamsre-origin` | `8080` | nginx: serve/cache manifests & segments, CORS + cache policy |
 | **Beacon collector** | `streamsre-beacon-collector` | `8001` | Ingest QoE telemetry from the player |
 | **MinIO** | `streamsre-minio` | `9000` / `9001` | S3-compatible object storage + web console |
-| **DynamoDB-local** | `streamsre-dynamodb` | *(internal `8000`)* | Movie catalog (metadata + job status) |
-| **floci** | *(own stack)* | `4566` | Local AWS emulator — used here **only for SQS** |
+| **DynamoDB-local** | `streamsre-dynamodb` | *(internal `8000`)* | Movie catalog, metadata, job status, and durable queue |
 | **Prometheus** | `streamsre-prometheus` | `9090` | Metrics scraping + recording/alert rules |
 | **Grafana** | `streamsre-grafana` | `3000` | Dashboards (origin, transcode, QoE, SLOs) |
 | **Alertmanager** | `streamsre-alertmanager` | `9093` | Routes burn-rate alerts |
@@ -170,7 +169,7 @@ sequenceDiagram
     participant FE as Frontend
     participant UA as upload-api
     participant S3 as MinIO
-    participant Q as SQS (floci)
+    participant Q as DynamoDB queue
     participant W as transcode-worker
     participant DB as DynamoDB
     participant OR as origin
@@ -204,18 +203,17 @@ sequenceDiagram
 
 ## 6. Storage & durability model
 
-A deliberate split — **the data that must survive a restart is persistent; only the queue is ephemeral.**
+A deliberate split — **catalog, media, and queue state survive a restart through Docker volumes.**
 
 | Store | Backing | Persistent? | Holds |
 |---|---|:--:|---|
 | **Object storage** | MinIO (`minio_data` volume) | ✅ | raw uploads + HLS/DASH segments + custom artwork |
 | **Catalog** | DynamoDB-local (`dynamo_data` volume) | ✅ | title metadata, visibility, job status, manifest URLs, `media_info` |
-| **Job queue** | floci SQS | ❌ (in-memory) | transcode job messages |
+| **Job queue** | DynamoDB-local (`dynamo_data` volume) | ✅ | durable transcode job messages |
 
-Because the queue is the *only* ephemeral piece, a restart mid-transcode can strand a catalog row
-in `processing` with its job message gone. Rather than fight that, the worker **reconciles on
-startup** (see [§12](#12-admin-studio--self-healing)) — the durable stores are the source of truth,
-and the queue is treated as a disposable cache of pending work.
+The worker still reconciles on startup (see [§12](#12-admin-studio--self-healing)) so interrupted
+jobs can be recovered. The queue is durable, while the catalog and object store remain the source
+of truth for completed media.
 
 > Two buckets: `streamsre-raw-uploads` (sources) and `streamsre-hls-segments` (packaged output + posters).
 > Browse them live in the MinIO console at `http://localhost:9001`.
@@ -496,7 +494,7 @@ buckets/tables are created automatically on `up` — **no Terraform apply is nee
 
 ```bash
 ./start.sh            # bring up the whole stack   (--seed pushes a demo clip)
-./stop.sh             # stop services              (./stop.sh --all also stops floci)
+./stop.sh             # stop services
 ```
 
 **Or with the Makefile / compose directly:**
@@ -511,10 +509,12 @@ bash scripts/seed-test-video.sh   # push a test clip through the pipeline
 Then:
 
 - **Browse & watch** — `http://localhost:3001`
-- **Admin studio** — `http://localhost:3001/admin` (default `admin`/`admin`). Uploads transcode to
+- **Admin studio** — `http://localhost:3001/admin` (credentials configured in `.env`). Uploads transcode to
   HLS+DASH and appear on the grid within a few seconds (it auto-refreshes).
+- **Upload limit** — source video files up to `10,000 MB` (10 GB decimal) are accepted; configure
+  `MAX_UPLOAD_SIZE_MB` consistently when deploying.
 - **Play directly** — `http://localhost:8080/hls/<job>/master.m3u8` (HLS) or `.../manifest.mpd` (DASH)
-- **Objects** — MinIO console `http://localhost:9001`
+- **Objects** — MinIO console `http://localhost:9001` (loopback only)
 - **Metrics & alerts** — Grafana `http://localhost:3000`, Prometheus `http://localhost:9090`
 - **Chaos** — scripts in `chaos/` kill origin / inject latency; watch burn-rate alerts fire
 
@@ -536,9 +536,10 @@ video-streaming-sre/
 │   │       ├── catalog.py     # DynamoDB writes (guarded)
 │   │       └── main.py        # SQS loop + startup reconciler
 │   ├── origin/              # nginx origin: serve/cache manifests + segments
-│   └── beacon-collector/    # QoE telemetry ingest
+│   ├── beacon-collector/    # QoE telemetry ingest
+│   └── relay-ingress/       # Laptop B: verified HLS/CMAF artifact intake only
 ├── frontend/                # Next.js 15 player UI + admin studio (hls.js)
-├── infra/terraform/         # IaC for cloud S3/SQS (reference; not run for local dev)
+├── infra/terraform/         # Optional IaC reference for AWS-compatible deployments
 ├── observability/           # Prometheus, Grafana, Alertmanager configs + dashboards
 ├── slo/ · runbooks/ · chaos/  # SRE artifacts
 ├── security/                # image + secret scanning
@@ -548,10 +549,18 @@ video-streaming-sre/
 └── start.sh · stop.sh · Makefile
 ```
 
+Laptop B setup and Laptop A artifact transfer are documented in
+[`docs/deployment-modes.md`](docs/deployment-modes.md). The relay receives only
+completed HLS/CMAF output; all codec work remains on Laptop A. Both machines
+should use the `feat/watch-party-relay` branch during this implementation phase.
+For a complete LAN, VPN, firewall, transfer, and party-room walkthrough, see
+[`docs/laptop-connection-guide.md`](docs/laptop-connection-guide.md).
+
 Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/transcode-pipeline.md`](docs/transcode-pipeline.md) ·
 [`docs/design.md`](docs/design.md) ·
-[`docs/infra-floci.md`](docs/infra-floci.md).
+[`docs/infra-floci.md`](docs/infra-floci.md) ·
+[`docs/deployment-modes.md`](docs/deployment-modes.md).
 
 ---
 
@@ -567,5 +576,11 @@ Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 - [ ] Viewer accounts: resume / continue-watching / My List
 - [ ] Durable queue (move SQS off the in-memory emulator)
 - [ ] Cloud deploy (ECS + CloudFront)
+- [ ] Laptop B relay mode with sandboxed artifact-only media delivery
+- [x] Code-gated watch-party rooms, chat, and scheduled premieres
+
+Single-node Cloudflared setup and 10-digit guest-code parties are documented in
+[`docs/cloudflared-watch-party.md`](docs/cloudflared-watch-party.md).
+- [ ] Optional WebRTC voice and measured peer-assisted segment delivery
 
 <div align="center"><sub>Built as an SRE portfolio project — local-first, GPU-accelerated, and instrumented end to end.</sub></div>

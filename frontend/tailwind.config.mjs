@@ -5,8 +5,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        // Inter (loaded via next/font in app/layout.tsx) with the system stack
-        // as fallback so macOS still renders SF before/without Inter.
+        // Keep builds offline-safe; use the platform UI font stack without a
+        // build-time Google Fonts download.
         sans: [
           "var(--font-inter)",
           "-apple-system",

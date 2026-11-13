@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Sparkles, Music, Captions, Check } from "lucide-react";
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
+import { clearBackendOverride, backendOverride } from "../../lib/backend";
 
 // Health → color. Lower-is-better metrics (startup, rebuffer) and higher-is-better
 // (rebuffer-free %) each get their own thresholds.
@@ -159,9 +160,21 @@ export function AdminObservability() {
 
   if (err || !stats) {
     return (
-      <p className="rounded-xl border border-white/10 bg-white/5 p-8 text-center text-sm text-white/50">
-        Beacon collector unreachable. Is the stack running?
-      </p>
+      <div className="rounded-xl border border-white/10 bg-white/5 p-8 text-center">
+        <p className="text-sm text-white/50">Beacon collector unreachable. Is the stack running?</p>
+        {backendOverride() && (
+          <button
+            type="button"
+            onClick={() => {
+              clearBackendOverride();
+              window.location.reload();
+            }}
+            className="mt-4 rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/15"
+          >
+            Use local backend
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -182,6 +195,9 @@ export function AdminObservability() {
           <Radio className="h-3 w-3 animate-pulse" /> live
         </span>
       </div>
+      <p className="mb-4 text-xs text-white/45">
+        Beacon collector connected · {s.recent_events.length} events received in the rolling window
+      </p>
 
       {/* Headline cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
