@@ -168,3 +168,79 @@ for real service endpoints:
 | Docker Compose | ECS Fargate / EKS |
 | Prometheus + Grafana | Amazon Managed Prometheus/Grafana or CloudWatch |
 | Terraform → floci | Same Terraform → AWS (drop the `endpoints{}`/skip_* in `provider.tf`) |
+
+---
+
+## 7. Watch-party and public-viewer extension
+
+The watch-party path is an additive deployment boundary around the existing
+catalog, origin, and player. The admin UI stays local. A hosted viewer frontend
+uses a Cloudflare Tunnel to reach only the public gateway; it never receives
+the admin API or direct origin access.
+
+```mermaid
+flowchart TB
+    subgraph AdminHost["Operator machine / Docker Compose"]
+      ADM["Admin studio\nlocalhost:3001/admin"]
+      PARTY["party-service\nrooms, clock, presence, chat"]
+      GATE["gateway :8088\npublic path allowlist + HLS auth"]
+      ORIGIN["origin :8080\nHLS/CMAF delivery"]
+      ROOMDB[("DynamoDB-local\nparty rooms")]
+      MEDIA[("MinIO\nready media")]
+
+      ADM -->|"Basic-auth admin commands"| PARTY
+      PARTY --> ROOMDB
+      GATE -->|"auth_request"| PARTY
+      GATE -->|"authorized media request"| ORIGIN
+      ORIGIN --> MEDIA
+    end
+
+    CF["Cloudflare Tunnel\noutbound connector"]
+    WEB["Render static viewer\nviewer-only frontend"]
+    GUESTS["Guest browsers"]
+
+    GATE <--> CF
+    GUESTS --> WEB
+    GUESTS <-->|"HTTPS: catalog, room API, gated HLS"| CF
+    GUESTS <-->|"WSS: state, presence, chat, telemetry"| CF
+```
+
+### 7.1 Room lifecycle and authorization
+
+```mermaid
+stateDiagram-v2
+    [*] --> Scheduled: admin schedules room
+    [*] --> Live: admin starts now
+    Scheduled --> Live: starts_at reached
+    Scheduled --> Ended: admin cancels
+    Live --> Ended: duration reached
+    Live --> Ended: admin ends stream
+    Ended --> [*]: media authorization revoked
+```
+
+- `party-service` stores durable room state, start/end times, title duration,
+  and completion reason in DynamoDB-local.
+- Participant sockets, viewer diagnostics, and recent room events are in-memory
+  operational state and reset with `party-service`.
+- The room code is not a media credential. Redeeming it produces a signed,
+  expiring token scoped to the room and `movie_id`.
+- The gateway calls the internal authorization endpoint for every HLS manifest,
+  playlist, initialization fragment, and media segment.
+- Playback position is derived from the server clock. Client controls cannot
+  alter the shared broadcast timeline.
+
+### 7.2 Control-room observability
+
+The admin observability page polls aggregate room telemetry and provides a
+searchable, vertically bounded room table. Each room can be inspected for
+connected/ready counts, average drift, reported bitrate, hashed client identity,
+and recent lifecycle or presence events. Raw client IP addresses are not sent to
+the frontend.
+
+This complements—not replaces—the platform QoE pipeline. Player startup,
+rebuffering, bitrate-switch, heartbeat, and error beacons still flow to the
+beacon collector and Prometheus, while the party service owns room-specific
+presence and synchronization data.
+
+See [cloudflared-watch-party.md](cloudflared-watch-party.md) for deployment,
+failure recovery, capacity planning, and the promotion workflow.
