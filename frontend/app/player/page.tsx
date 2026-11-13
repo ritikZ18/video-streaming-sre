@@ -6,6 +6,7 @@ import { Navbar } from "../../components/layout/Navbar";
 import { VideoPlayer } from "../../components/player/VideoPlayer";
 import { getMovie } from "../../lib/api";
 import type { MediaInfo, SubtitleTrack } from "../../lib/types";
+import { isAuthed } from "../../lib/auth";
 
 /** Whether THIS browser can actually decode 10-bit HDR HEVC smoothly — not just
  * claim to. `mediaCapabilities.decodingInfo` is far more accurate than
@@ -51,6 +52,7 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!isAuthed()) { window.location.replace("/party"); return; }
     const q = new URLSearchParams(window.location.search);
     const id = q.get("id");
     const urlParam = q.get("url"); // legacy / seed fallback

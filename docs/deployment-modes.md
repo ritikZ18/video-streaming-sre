@@ -373,13 +373,20 @@ curl -X POST http://127.0.0.1:8088/api/party/rooms \
   -d '{"movie_id":"movie-a81f2","title":"Friday Movie Night"}'
 ```
 
-Guests use the returned `room_id` and `invite_token` with:
+Guests redeem the returned 10-digit `code` with:
 
 ```text
-GET /api/party/rooms/<room_id>?invite_token=<invite_token>
-WS  /ws/party/<room_id>?invite_token=<invite_token>&name=Guest
+POST /api/party/rooms/<code>/join
 ```
 
-The WebSocket supports `chat` messages and versioned `playback` messages. Room
-metadata is durable in DynamoDB-local; active connections and presence are
-intentionally in memory on the single relay instance.
+The response contains a short-lived bearer session bound to that room and
+movie. The browser sends it on every `/hls/<movie_id>/...` request. The party
+WebSocket carries the session as a subprotocol (not in the URL, where proxies
+would log it) and supports chat, readiness, presence, and QoE heartbeats.
+Playback position is derived from the server clock; viewers cannot publish
+play/pause/seek changes. Scheduled media authorization returns `403` before the
+curtain time, anonymous media returns `401`, and ended rooms revoke access.
+
+Room metadata is durable in DynamoDB-local. Active connections, participant
+diagnostics, and recent events are intentionally in memory on the single relay
+instance.

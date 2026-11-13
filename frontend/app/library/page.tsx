@@ -79,6 +79,7 @@ export default function LibraryPage() {
 
   const playMovie = (movie: Movie) => {
     if (!movie.manifestUrl) return;
+    if (!isAdmin) { window.location.href = "/party"; return; }
     window.location.href = `/player?id=${encodeURIComponent(movie.id)}`;
   };
 

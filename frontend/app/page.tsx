@@ -11,6 +11,7 @@ import { Footer } from "../components/layout/Footer";
 import { HeroCarousel } from "../components/movie/HeroCarousel";
 import { ScrollRow } from "../components/movie/ScrollRow";
 import { MovieDetail } from "../components/movie/MovieDetail";
+import { isAuthed } from "../lib/auth";
 
 const GENRES = ["Action", "Sci-Fi", "Drama", "Comedy", "Documentary"] as const;
 
@@ -56,6 +57,7 @@ export default function HomePage() {
 
   const playMovie = (movie: Movie) => {
     if (!movie.manifestUrl) return;
+    if (!isAuthed()) { window.location.href = "/party"; return; }
     // Only the id — the player fetches url/title/poster via getMovie(id), so the
     // manifest/poster URLs aren't exposed in the address bar.
     window.location.href = `/player?id=${encodeURIComponent(movie.id)}`;

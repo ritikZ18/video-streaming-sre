@@ -5,6 +5,7 @@ import { Activity, Zap, AlertTriangle, Users, Radio, Gauge, Loader2, Film, Spark
 import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
 import type { Movie } from "../../lib/types";
 import { clearBackendOverride, backendOverride } from "../../lib/backend";
+import { fetchPartyAdminStats, type PartyRoom } from "../../lib/party";
 
 // Health → color. Lower-is-better metrics (startup, rebuffer) and higher-is-better
 // (rebuffer-free %) each get their own thresholds.
@@ -86,6 +87,7 @@ export function AdminObservability() {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState(false);
+  const [partyRooms, setPartyRooms] = useState<PartyRoom[]>([]);
   // Ticks every second so interpolation elapsed / ETA count up smoothly between
   // the 4s catalog polls.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -109,6 +111,13 @@ export function AdminObservability() {
     const t = setInterval(load, 4000);
     return () => clearInterval(t);
   }, [load]);
+
+  useEffect(() => {
+    const loadParties = () => { void fetchPartyAdminStats().then((result) => setPartyRooms(result.rooms)).catch(() => {}); };
+    loadParties();
+    const timer = setInterval(loadParties, 4000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Poll the catalog for the content_id → title map AND live encode status.
   useEffect(() => {
@@ -229,6 +238,14 @@ export function AdminObservability() {
           sub={`avg bitrate ${s.bitrate_kbps.avg ? `${(s.bitrate_kbps.avg / 1000).toFixed(1)} Mbps` : "—"}`}
           tone={s.errors.total === 0 ? "good" : "bad"}
         />
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.035]">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-violet-200/70"><Radio className="h-3.5 w-3.5" /> Watch-party control room</span>
+          <span className="text-[11px] text-white/40">{partyRooms.filter((room) => room.state === "live").length} live · {partyRooms.length} total</span>
+        </div>
+        {!partyRooms.length ? <p className="px-4 py-6 text-center text-sm text-white/40">No watch parties created yet.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs"><thead className="bg-black/10 text-[9px] uppercase tracking-wider text-white/35"><tr><th className="px-4 py-2.5">Presentation</th><th className="px-4 py-2.5">State</th><th className="px-4 py-2.5">Audience</th><th className="px-4 py-2.5">Viewer diagnostics</th><th className="px-4 py-2.5">Broadcast position</th><th className="px-4 py-2.5">Scheduled</th></tr></thead><tbody className="divide-y divide-white/[.06]">{partyRooms.map((room) => <tr key={room.room_id} className="align-top"><td className="px-4 py-3"><b className="block max-w-[240px] truncate text-white">{room.title}</b><span className="font-mono text-[9px] text-white/35">code ••••••{room.room_id.slice(-4)}</span></td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${room.state === "live" ? "bg-emerald-500/15 text-emerald-300" : room.state === "ended" ? "bg-white/10 text-white/40" : "bg-violet-500/15 text-violet-300"}`}>{room.state}</span></td><td className="px-4 py-3 tabular-nums text-white/70">{room.participants ?? 0} joined · {room.ready_participants ?? 0} ready</td><td className="px-4 py-3"><div className="grid max-h-24 gap-1 overflow-auto">{(room.participant_details ?? []).map((viewer) => <span key={viewer.viewer_id} className="whitespace-nowrap text-[9px] text-white/45"><b className="text-white/70">{viewer.name}</b> · {viewer.country} · #{viewer.ip_hash} · {viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps</span>)}{!(room.participant_details?.length) && <span className="text-[9px] text-white/30">No connected viewers</span>}</div></td><td className="px-4 py-3 font-mono tabular-nums text-white/70">{fmtDur(room.position_seconds ?? 0)}</td><td className="px-4 py-3 text-white/50">{room.starts_at ? new Date(room.starts_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div>}
       </div>
 
       {/* Transcode jobs — live encode progress from the catalog (upload-api) */}

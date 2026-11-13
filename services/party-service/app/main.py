@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import json
 import secrets
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -31,6 +34,12 @@ class Settings(BaseSettings):
 settings = Settings()
 app = FastAPI(title="StreamSRE Party Service", version="1.0.0")
 connections: dict[str, set[WebSocket]] = defaultdict(set)
+participant_meta: dict[str, dict[WebSocket, dict[str, Any]]] = defaultdict(dict)
+room_events: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=500))
+
+
+def record_event(room_id: str, kind: str, **detail: Any) -> None:
+    room_events[room_id].append({"timestamp": time.time(), "type": kind, **detail})
 
 
 class CreateRoom(BaseModel):
@@ -69,6 +78,29 @@ def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def encode_session(room_id: str, movie_id: str, viewer_id: str) -> str:
+    payload = {"room": room_id, "movie": movie_id, "viewer": viewer_id, "exp": int(time.time()) + 21_600}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    signature = hmac.new(settings.party_admin_token.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    return f"{raw}.{signature}"
+
+
+def decode_session(token: str) -> dict[str, Any] | None:
+    try:
+        raw, signature = token.split(".", 1)
+        expected = hmac.new(settings.party_admin_token.encode(), raw.encode(), hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(signature, expected):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+        return payload if int(payload["exp"]) >= int(time.time()) else None
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def bearer_token(authorization: str | None) -> str:
+    return authorization[7:] if authorization and authorization.startswith("Bearer ") else ""
+
+
 def require_admin(authorization: str | None) -> None:
     bearer = f"Bearer {settings.party_admin_token}"
     basic = "Basic " + base64.b64encode(
@@ -85,7 +117,18 @@ def room_item(room_id: str) -> dict[str, Any] | None:
 
 
 def public_room(item: dict[str, Any]) -> dict[str, Any]:
-    return {key: item[key] for key in ("room_id", "movie_id", "title", "state", "starts_at", "position_seconds", "playing", "version") if key in item}
+    room = {key: item[key] for key in ("room_id", "movie_id", "title", "state", "starts_at", "position_seconds", "playing", "version", "created_at", "ended_at") if key in item}
+    starts_at = str(item.get("starts_at", ""))
+    if item.get("state") != "ended" and starts_at:
+        try:
+            start_epoch = datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp()
+            if time.time() >= start_epoch:
+                room.update(state="live", playing=True, position_seconds=max(0, time.time() - start_epoch), server_time=time.time())
+        except ValueError:
+            pass
+    room["participants"] = len(connections.get(str(item.get("room_id")), set()))
+    room["ready_participants"] = sum(1 for meta in participant_meta.get(str(item.get("room_id")), {}).values() if meta.get("ready"))
+    return jsonable_encoder(room)
 
 
 async def broadcast(room_id: str, message: dict[str, Any]) -> None:
@@ -122,8 +165,8 @@ def create_room(request: CreateRoom, authorization: str | None = Header(default=
             "room_id": room_id,
             "movie_id": request.movie_id,
             "title": request.title,
-            "state": "scheduled" if request.starts_at else "waiting",
-            "starts_at": request.starts_at.isoformat() if request.starts_at else "",
+            "state": "scheduled" if request.starts_at else "live",
+            "starts_at": request.starts_at.isoformat() if request.starts_at else datetime.now().astimezone().isoformat(),
             "position_seconds": 0,
             "playing": False,
             "version": 0,
@@ -150,17 +193,71 @@ def get_room(room_id: str) -> dict[str, Any]:
     return public_room(item)
 
 
+@app.post("/v1/rooms/{room_id}/join")
+def join_room(room_id: str) -> dict[str, Any]:
+    item = room_item(room_id)
+    if not item or item.get("state") == "ended":
+        raise HTTPException(status_code=404, detail="Room not found")
+    viewer_id = secrets.token_urlsafe(12)
+    return {"access_token": encode_session(room_id, item["movie_id"], viewer_id), "viewer_id": viewer_id, "room": public_room(item)}
+
+
+@app.get("/v1/authorize", status_code=204)
+def authorize_media(movie_id: str, authorization: str | None = Header(default=None)) -> None:
+    session = decode_session(bearer_token(authorization))
+    if not session or not secrets.compare_digest(str(session.get("movie", "")), movie_id):
+        raise HTTPException(status_code=401, detail="Valid watch-party session required")
+    item = room_item(str(session.get("room", "")))
+    if not item or item.get("state") == "ended" or item.get("movie_id") != movie_id:
+        raise HTTPException(status_code=403, detail="Party access expired")
+    starts_at = str(item.get("starts_at", ""))
+    try:
+        if starts_at and time.time() < datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp():
+            raise HTTPException(status_code=403, detail="Screening has not started")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Invalid screening schedule")
+
+
+@app.get("/v1/admin/rooms")
+def list_rooms(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_admin(authorization)
+    items = table().scan(Limit=100).get("Items", [])
+    rooms = sorted((public_room(item) for item in items), key=lambda room: int(room.get("created_at", 0)), reverse=True)
+    for room in rooms:
+        room_id = str(room["room_id"])
+        room["participant_details"] = list(participant_meta.get(room_id, {}).values())
+        room["recent_events"] = list(room_events.get(room_id, ()))[-100:]
+    return {"rooms": rooms, "generated_at": time.time()}
+
+
+@app.post("/v1/admin/rooms/{room_id}/end")
+async def end_room(room_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_admin(authorization)
+    if not room_item(room_id):
+        raise HTTPException(status_code=404, detail="Room not found")
+    table().update_item(Key={"room_id": room_id}, UpdateExpression="SET #s = :s, ended_at = :e, playing = :p", ExpressionAttributeNames={"#s": "state"}, ExpressionAttributeValues={":s": "ended", ":e": int(time.time()), ":p": False})
+    await broadcast(room_id, {"type": "ended"})
+    return {"status": "ended"}
+
+
 @app.websocket("/ws/rooms/{room_id}")
 async def room_socket(websocket: WebSocket, room_id: str, name: str = "Guest") -> None:
     item = room_item(room_id)
-    if not item:
+    protocols = [value.strip() for value in websocket.headers.get("sec-websocket-protocol", "").split(",")]
+    token = protocols[1] if len(protocols) == 2 and protocols[0] == "party-v1" else ""
+    session = decode_session(token)
+    if not item or not session or session.get("room") != room_id or session.get("movie") != item.get("movie_id"):
         await websocket.close(code=1008)
         return
     if len(connections[room_id]) >= settings.party_max_participants:
         await websocket.close(code=1013)
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol="party-v1")
     connections[room_id].add(websocket)
+    forwarded_ip = websocket.headers.get("cf-connecting-ip") or websocket.headers.get("x-forwarded-for", "").split(",")[0].strip() or (websocket.client.host if websocket.client else "unknown")
+    ip_hash = hmac.new(settings.party_admin_token.encode(), forwarded_ip.encode(), hashlib.sha256).hexdigest()[:12]
+    participant_meta[room_id][websocket] = {"viewer_id": session["viewer"], "name": name[:40], "ready": False, "joined_at": time.time(), "ip_hash": ip_hash, "country": websocket.headers.get("cf-ipcountry", "—"), "drift_ms": 0, "bitrate_kbps": 0}
+    record_event(room_id, "join", viewer_id=session["viewer"], name=name[:40])
     await websocket.send_json({"type": "room_state", "room": public_room(item)})
     await broadcast(room_id, {"type": "presence", "name": name, "count": len(connections[room_id])})
     try:
@@ -170,13 +267,17 @@ async def room_socket(websocket: WebSocket, room_id: str, name: str = "Guest") -
             if kind == "chat":
                 text = str(message.get("text", "")).strip()[:1000]
                 if text:
+                    record_event(room_id, "chat", viewer_id=session["viewer"])
                     await broadcast(room_id, {"type": "chat", "name": name, "text": text})
-            elif kind == "playback":
+            elif kind == "ready":
+                participant_meta[room_id][websocket]["ready"] = bool(message.get("ready", True))
+                record_event(room_id, "ready", viewer_id=session["viewer"], ready=bool(message.get("ready", True)))
                 current = room_item(room_id) or item
-                version = int(current.get("version", 0)) + 1
-                update = {"position_seconds": max(0, float(message.get("position_seconds", 0))), "playing": bool(message.get("playing", False)), "version": version}
-                table().update_item(Key={"room_id": room_id}, UpdateExpression="SET position_seconds = :p, playing = :l, #v = :v", ExpressionAttributeNames={"#v": "version"}, ExpressionAttributeValues={":p": update["position_seconds"], ":l": update["playing"], ":v": version})
-                await broadcast(room_id, {"type": "playback", **update})
+                await broadcast(room_id, {"type": "room_state", "room": public_room(current)})
+            elif kind == "heartbeat":
+                participant_meta[room_id][websocket].update(last_seen=time.time(), drift_ms=max(-60_000, min(60_000, int(message.get("drift_ms", 0)))), bitrate_kbps=max(0, int(message.get("bitrate_kbps", 0))))
     except WebSocketDisconnect:
         connections[room_id].discard(websocket)
+        participant_meta[room_id].pop(websocket, None)
+        record_event(room_id, "leave", viewer_id=session["viewer"])
         await broadcast(room_id, {"type": "presence", "name": name, "count": len(connections[room_id])})

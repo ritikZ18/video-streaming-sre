@@ -1,72 +1,97 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { CalendarClock, Check, Copy, Loader2, Users } from "lucide-react";
+import { CalendarDays, Check, ChevronRight, Clock3, Copy, ExternalLink, Film, Loader2, Play, Radio, Sparkles } from "lucide-react";
 import { listMovies } from "../../lib/api";
-import { createPartyRoom } from "../../lib/party";
+import { createPartyRoom, fetchPartyAdminStats } from "../../lib/party";
 import type { Movie } from "../../lib/types";
+import styles from "./WatchPartyManager.module.css";
+
+type ScheduleMode = "now" | "later";
+type CreatedParty = { code: string; startsAt?: string };
+const pad = (value: number) => String(value).padStart(2, "0");
+const localParts = (date: Date) => ({ date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`, time: `${pad(date.getHours())}:${pad(date.getMinutes())}` });
+
+function countdown(target: number, now: number) {
+  const seconds = Math.max(0, Math.floor((target - now) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return [days ? `${days}d` : null, hours ? `${hours}h` : null, `${minutes}m`].filter(Boolean).join(" ");
+}
 
 export function WatchPartyManager() {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [movieId, setMovieId] = useState("");
-  const [startsAt, setStartsAt] = useState("");
+  const [mode, setMode] = useState<ScheduleMode>("now");
+  const initial = useMemo(() => localParts(new Date(Date.now() + 30 * 60_000)), []);
+  const [date, setDate] = useState(initial.date);
+  const [time, setTime] = useState(initial.time);
+  const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
-  const [code, setCode] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [created, setCreated] = useState<CreatedParty | null>(null);
+  const [copied, setCopied] = useState<"code" | "link" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [partyStates, setPartyStates] = useState<Map<string, string>>(new Map());
 
+  useEffect(() => { void listMovies().then((items) => { const ready = items.filter((item) => item.manifestUrl && item.status !== "processing"); setMovies(ready); setMovieId((current) => current || ready[0]?.id || ""); }); }, []);
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
-    void listMovies().then((items) => {
-      const ready = items.filter((item) => item.manifestUrl && item.status !== "processing");
-      setMovies(ready);
-      setMovieId((current) => current || ready[0]?.id || "");
-    });
+    const load = () => { void fetchPartyAdminStats().then((result) => setPartyStates(new Map(result.rooms.filter((room) => room.state !== "ended").map((room) => [room.movie_id, room.state])))).catch(() => {}); };
+    load(); const timer = window.setInterval(load, 5000); return () => window.clearInterval(timer);
   }, []);
 
   const selected = useMemo(() => movies.find((movie) => movie.id === movieId), [movies, movieId]);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const scheduledDate = useMemo(() => new Date(`${date}T${time}`), [date, time]);
+  const scheduleValid = mode === "now" || (Number.isFinite(scheduledDate.getTime()) && scheduledDate.getTime() > now);
+  const exactStart = scheduleValid && mode === "later" ? new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(scheduledDate) : "Starts as soon as the room is created";
+
+  function applyPreset(kind: "30" | "tonight" | "tomorrow") {
+    const target = new Date();
+    if (kind === "30") target.setTime(target.getTime() + 30 * 60_000);
+    if (kind !== "30") { target.setHours(20, 0, 0, 0); if (kind === "tomorrow" || target.getTime() <= Date.now()) target.setDate(target.getDate() + 1); }
+    const parts = localParts(target); setDate(parts.date); setTime(parts.time); setMode("later"); setCreated(null);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!selected) return;
-    setBusy(true);
-    setError(null);
+    if (!selected || !scheduleValid) return;
+    setBusy(true); setError(null);
     try {
-      const result = await createPartyRoom({
-        movie_id: selected.id,
-        title: selected.title,
-        starts_at: startsAt ? new Date(startsAt).toISOString() : undefined,
-      });
-      setCode(result.code);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create the watch party.");
-    } finally {
-      setBusy(false);
-    }
+      const startsAt = mode === "later" ? scheduledDate.toISOString() : undefined;
+      const result = await createPartyRoom({ movie_id: selected.id, title: selected.title, starts_at: startsAt });
+      setCreated({ code: result.code, startsAt });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the watch party."); } finally { setBusy(false); }
   }
 
-  async function copyCode() {
-    if (!code) return;
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  }
+  async function copy(value: string, kind: "code" | "link") { await navigator.clipboard.writeText(value); setCopied(kind); window.setTimeout(() => setCopied(null), 1600); }
 
-  return (
-    <section className="mt-10 rounded-2xl border border-indigo-400/20 bg-indigo-500/[0.06] p-5">
-      <div className="mb-4 flex items-center gap-3">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/20"><Users className="h-5 w-5 text-indigo-200" /></span>
-        <div><h2 className="font-bold">Create a watch party</h2><p className="text-xs text-white/50">Guests join the hosted viewer with a system-generated 10-digit code.</p></div>
+  const poster = selected?.posterUrl || selected?.thumbnailUrl || selected?.backdropUrl;
+  const video = selected?.mediaInfo?.video;
+  const invitePath = created ? `/party?code=${created.code}` : "";
+
+  return <section className={styles.studio}>
+    <div className={styles.glow} />
+    <header className={styles.header}><span className={styles.icon}><Film /></span><div><span className={styles.overline}>Private screening</span><h2>Host a Watch Party</h2><p>Choose a film, set the curtain time, and share one private code.</p></div><span className={styles.secure}><Radio /> Live room</span></header>
+    <div className={styles.layout}>
+      <div className={styles.library}>
+        <div className={styles.sectionTitle}><span>Your ready titles</span><small>{movies.length} available</small></div>
+        <div className={styles.movieTable} role="listbox" aria-label="Choose a movie">
+          {!movies.length && <div className={styles.empty}>Finish transcoding a title to host a screening.</div>}
+          {movies.map((movie) => { const artwork = movie.posterUrl || movie.thumbnailUrl || movie.backdropUrl; const info = movie.mediaInfo?.video; const active = movie.id === movieId; const partyState = partyStates.get(movie.id); return <button type="button" role="option" aria-selected={active} key={movie.id} className={active ? styles.movieActive : styles.movieRow} onClick={() => { setMovieId(movie.id); setCreated(null); }}><span className={styles.poster} style={artwork ? { backgroundImage: `url("${artwork}")` } : { backgroundImage: movie.gradient }} /><span className={styles.movieCopy}><b>{movie.title}</b><small>{[movie.year, movie.duration, info?.height ? `${info.height}p` : null].filter(Boolean).join(" · ")}</small></span><span className={styles.ready}>{partyState === "live" ? <><Radio /> Playing now</> : partyState === "scheduled" ? <><Clock3 /> Scheduled</> : <><Check /> Ready</>}</span><ChevronRight className={styles.chevron} /></button>; })}
+        </div>
+        {selected && <div className={styles.featured} style={poster ? { backgroundImage: `linear-gradient(90deg, rgba(11,11,20,.94), rgba(11,11,20,.48)), url("${poster}")` } : undefined}><span>Selected presentation</span><h3>{selected.title}</h3><p>{[selected.duration || "Runtime unavailable", video?.width && video?.height ? `${video.width} × ${video.height}` : "Adaptive HLS", video?.codec?.toUpperCase()].filter(Boolean).join("  ·  ")}</p></div>}
       </div>
-      <form onSubmit={submit} className="grid gap-3 md:grid-cols-[1fr_240px_auto]">
-        <select value={movieId} onChange={(event) => setMovieId(event.target.value)} className="rounded-xl border border-white/15 bg-[#171722] px-3 py-2.5 text-sm text-white" required>
-          {!movies.length && <option value="">No ready titles</option>}
-          {movies.map((movie) => <option value={movie.id} key={movie.id}>{movie.title}</option>)}
-        </select>
-        <label className="relative"><CalendarClock className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-white/40" /><input type="datetime-local" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} className="w-full rounded-xl border border-white/15 bg-[#171722] py-2.5 pl-9 pr-3 text-sm text-white" aria-label="Optional scheduled start" /></label>
-        <button disabled={busy || !movieId} className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">{busy && <Loader2 className="h-4 w-4 animate-spin" />}{startsAt ? "Schedule" : "Create now"}</button>
+      <form className={styles.scheduler} onSubmit={submit}>
+        <div className={styles.sectionTitle}><span>Set the curtain time</span><small>{timezone}</small></div>
+        <div className={styles.modeSwitch}><button type="button" className={mode === "now" ? styles.modeActive : ""} onClick={() => { setMode("now"); setCreated(null); }}><Play />Start now</button><button type="button" className={mode === "later" ? styles.modeActive : ""} onClick={() => { setMode("later"); setCreated(null); }}><CalendarDays />Schedule</button></div>
+        {mode === "later" && <><div className={styles.dateGrid}><label><span>Date</span><div><CalendarDays /><input type="date" value={date} min={localParts(new Date()).date} onChange={(event) => { setDate(event.target.value); setCreated(null); }} /></div></label><label><span>Time</span><div><Clock3 /><input type="time" value={time} onChange={(event) => { setTime(event.target.value); setCreated(null); }} /></div></label></div><div className={styles.presets}><span>Quick presets</span><div><button type="button" onClick={() => applyPreset("30")}>In 30 min</button><button type="button" onClick={() => applyPreset("tonight")}>Tonight · 8 PM</button><button type="button" onClick={() => applyPreset("tomorrow")}>Tomorrow · 8 PM</button></div></div></>}
+        <div className={scheduleValid ? styles.startPreview : styles.startError}><Sparkles /><div><small>{mode === "later" ? "Your premiere starts" : "Room opens immediately"}</small><strong>{scheduleValid ? exactStart : "Choose a future date and time"}</strong>{mode === "later" && scheduleValid && <span>Begins in {countdown(scheduledDate.getTime(), now)} · saved as UTC</span>}</div></div>
+        <button className={styles.createButton} disabled={busy || !selected || !scheduleValid}>{busy ? <Loader2 className="animate-spin" /> : <Film />}{busy ? "Preparing theater…" : mode === "later" ? "Schedule Watch Party" : "Create Watch Party"}</button>
+        {error && <p className={styles.error}>{error}</p>}
+        {created && <div className={styles.success}><div><span>The theater is ready</span><strong>{created.code}</strong><small>{created.startsAt ? `Scheduled · ${exactStart}` : "Open now"}</small></div><div className={styles.successActions}><button type="button" onClick={() => void copy(created.code, "code")}>{copied === "code" ? <Check /> : <Copy />}{copied === "code" ? "Copied" : "Copy code"}</button><button type="button" onClick={() => void copy(`${window.location.origin}${invitePath}`, "link")}><Copy />{copied === "link" ? "Copied" : "Copy invite"}</button><a href={invitePath} target="_blank" rel="noreferrer"><ExternalLink />Open theater</a></div></div>}
       </form>
-      {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
-      {code && <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-4"><div><p className="text-[10px] font-bold uppercase tracking-wider text-emerald-200/60">Guest code</p><p className="font-mono text-2xl tracking-[0.22em] text-emerald-100">{code}</p></div><button type="button" onClick={copyCode} className="ml-auto inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-xs font-semibold">{copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}{copied ? "Copied" : "Copy code"}</button></div>}
-    </section>
-  );
+    </div>
+  </section>;
 }

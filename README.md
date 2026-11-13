@@ -560,7 +560,8 @@ Deeper docs: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/transcode-pipeline.md`](docs/transcode-pipeline.md) ·
 [`docs/design.md`](docs/design.md) ·
 [`docs/infra-floci.md`](docs/infra-floci.md) ·
-[`docs/deployment-modes.md`](docs/deployment-modes.md).
+[`docs/deployment-modes.md`](docs/deployment-modes.md) ·
+[`docs/cloudflared-watch-party.md`](docs/cloudflared-watch-party.md).
 
 ---
 
