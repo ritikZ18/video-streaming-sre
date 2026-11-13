@@ -18,16 +18,17 @@ class Settings(BaseSettings):
     )
     s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
 
-    sqs_transcode_queue_url: str = Field(
-        default="",
-        alias="SQS_TRANSCODE_QUEUE_URL",
-    )
-    sqs_dlq_url: str = Field(default="", alias="SQS_DLQ_URL")
-    sqs_endpoint_url: str | None = Field(default=None, alias="SQS_ENDPOINT_URL")
-
     # DynamoDB (catalog) — the worker flips a movie to "ready" on completion.
     dynamodb_endpoint_url: str | None = Field(default=None, alias="DYNAMODB_ENDPOINT_URL")
     dynamodb_table: str = Field(default="streamsre-catalog", alias="DYNAMODB_TABLE")
+
+    # DynamoDB-backed durable job queue (replaces the ephemeral SQS emulator). A
+    # claimed job is leased for this many seconds; if the worker dies, the lease
+    # expires and the job becomes claimable again (at-least-once, like SQS).
+    queue_table: str = Field(default="streamsre-transcode-queue", alias="QUEUE_TABLE")
+    queue_visibility_timeout_seconds: int = Field(
+        default=1800, alias="QUEUE_VISIBILITY_TIMEOUT"
+    )
 
     # Browser-facing origin base URL used to build playback manifest URLs.
     origin_base_url: str = Field(default="http://localhost:8080", alias="ORIGIN_BASE_URL")
@@ -40,6 +41,23 @@ class Settings(BaseSettings):
     x264_preset: str = Field(default="veryfast", alias="X264_PRESET")
     use_nvenc: bool = Field(default=False, alias="USE_NVENC")
     nvenc_preset: str = Field(default="p4", alias="NVENC_PRESET")
+
+    # --- I/O Framer (frame interpolation) — Phase 0 plumbing, OFF by default ---
+    # The worker will (later phases) hand the decoded frames to the I/O Framer
+    # sidecar over HTTP and mux the interpolated result back into the ladder.
+    # For now these only describe where the sidecar lives and the safety caps;
+    # no code path reads them yet.
+    interp_enabled: bool = Field(default=False, alias="INTERP_ENABLED")
+    interp_service_url: str = Field(
+        default="http://io-framer:8000", alias="INTERP_SERVICE_URL"
+    )
+    interp_timeout_seconds: int = Field(default=1800, alias="INTERP_TIMEOUT_SECONDS")
+    interp_max_target_fps: int = Field(default=60, alias="INTERP_MAX_TARGET_FPS")
+    interp_max_height: int = Field(default=1080, alias="INTERP_MAX_HEIGHT")
+    interp_max_source_fps: int = Field(default=40, alias="INTERP_MAX_SOURCE_FPS")
+    interp_max_duration_seconds: int = Field(
+        default=600, alias="INTERP_MAX_DURATION_SECONDS"
+    )
 
 
 @lru_cache(maxsize=1)

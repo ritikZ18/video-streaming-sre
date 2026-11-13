@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -9,6 +10,8 @@ from app.config import get_settings
 from app.models.schemas import Movie
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
 
 
 def _resource():
@@ -86,7 +89,15 @@ def list_all() -> list[Movie]:
             return []
         raise
     items = response.get("Items", [])
-    movies = [_to_movie(i) for i in items]
+    # A single malformed row (e.g. a phantom left by a progress update that
+    # upserted after its base row was deleted) must never sink the whole catalog
+    # — skip and log it instead of 500-ing every listing.
+    movies: list[Movie] = []
+    for item in items:
+        try:
+            movies.append(_to_movie(item))
+        except Exception as exc:  # noqa: BLE001 - tolerate one bad row
+            logger.warning("skipping malformed catalog row %s: %s", item.get("id"), exc)
     # Newest first.
     movies.sort(key=lambda m: m.created_at, reverse=True)
     return movies
@@ -95,6 +106,30 @@ def list_all() -> list[Movie]:
 def get(movie_id: str) -> Movie | None:
     item = _table().get_item(Key={"id": movie_id}).get("Item")
     return _to_movie(item) if item else None
+
+
+def delete_row(movie_id: str) -> None:
+    """Remove a movie's catalog row (its S3 objects are deleted separately)."""
+    _table().delete_item(Key={"id": movie_id})
+
+
+def update_fields(movie_id: str, fields: dict[str, Any]) -> None:
+    """Update the given catalog attributes (admin metadata edit / poster URL).
+    Skips None values; aliases every attribute name so reserved words (status,
+    year, …) are always safe. No-op if nothing to set."""
+    items = [(k, v) for k, v in fields.items() if v is not None]
+    if not items:
+        return
+    names = {f"#k{i}": k for i, (k, _) in enumerate(items)}
+    values = {f":v{i}": v for i, (_, v) in enumerate(items)}
+    expr = "SET " + ", ".join(f"#k{i} = :v{i}" for i in range(len(items)))
+    _table().update_item(
+        Key={"id": movie_id},
+        UpdateExpression=expr,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ConditionExpression="attribute_exists(id)",
+    )
 
 
 def request_cancel(movie_id: str) -> None:

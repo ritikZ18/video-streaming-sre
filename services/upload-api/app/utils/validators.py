@@ -5,7 +5,11 @@ from typing import BinaryIO
 from app.config import get_settings
 from fastapi import HTTPException, UploadFile, status
 
-MP4_SIGNATURES = (b"ftypisom", b"ftypmp4", b"ftypM4V")
+# Every mp4/mov/m4v begins with an ISO-BMFF `ftyp` box at byte 4. The major
+# brand that follows varies widely (isom, mp41/42, iso5/6, dash, avc1, av01,
+# qt, M4V …), so we match the box marker itself rather than a fixed brand list —
+# otherwise valid files (e.g. AV1/HDR mp4s branded iso5) get rejected with a 400.
+ISO_FTYP = b"ftyp"
 MKV_SIGNATURE = b"matroska"
 EBML_SIGNATURE = b"\x1aE\xdf\xa3"  # Matroska / WebM container header (bytes 0-3)
 
@@ -38,7 +42,7 @@ def validate_magic_bytes(upload: UploadFile) -> None:
     # bytes 0-3 but the "matroska" string sits ~24 bytes in, so a 16-byte read
     # used to reject valid .mkv files with a 400.
     header = _read_magic(upload.file, 64)
-    if any(sig in header for sig in MP4_SIGNATURES):
+    if ISO_FTYP in header[:16]:  # any mp4 / mov / m4v brand
         return
     if header.startswith(EBML_SIGNATURE) or MKV_SIGNATURE in header:
         return

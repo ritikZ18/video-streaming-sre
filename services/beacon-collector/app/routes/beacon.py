@@ -9,9 +9,16 @@ from app.metrics.qoe import (
     QOE_STARTUP,
 )
 from app.models.beacon_schema import BeaconBatch
+from app.store import store
 from fastapi import APIRouter, status
 
 router = APIRouter(prefix="/api/v1/beacon", tags=["beacon"])
+
+
+@router.get("/stats")
+async def qoe_stats() -> dict:
+    """Live rolling QoE aggregation for the admin observability dashboard."""
+    return store.stats()
 
 
 @router.post(
@@ -19,6 +26,9 @@ router = APIRouter(prefix="/api/v1/beacon", tags=["beacon"])
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def ingest_beacon(batch: BeaconBatch) -> dict[str, str]:
+    # Fold into the in-memory rolling store for the live dashboard.
+    store.record(batch)
+
     seen_rebuffer = False
 
     for event in batch.events:

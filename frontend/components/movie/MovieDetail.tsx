@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import type { Movie } from "../../lib/types";
+import { softSpring } from "../../lib/motion";
 
 type MovieDetailProps = {
   movie: Movie;
@@ -21,18 +22,18 @@ export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
         onClick={onClose}
       >
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 24 }}
-          transition={{ duration: 0.25, ease: "easeOut" }}
+          initial={{ opacity: 0, y: 24, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 24, scale: 0.98 }}
+          transition={softSpring}
           className="relative flex w-[90%] max-w-xl flex-col overflow-hidden rounded-modal border border-white/10 bg-zinc-900/70 shadow-2xl ring-1 ring-white/5 backdrop-blur-2xl backdrop-saturate-150"
           onClick={(event) => event.stopPropagation()}
         >
           <div
             className="relative h-64 bg-cover bg-center"
             style={
-              movie.thumbnailUrl
-                ? { backgroundImage: `url("${movie.thumbnailUrl}")` }
+              movie.backdropUrl || movie.thumbnailUrl
+                ? { backgroundImage: `url("${movie.backdropUrl ?? movie.thumbnailUrl}")` }
                 : { backgroundImage: movie.gradient }
             }
           >
@@ -80,11 +81,18 @@ export function MovieDetail({ movie, onClose, onPlay }: MovieDetailProps) {
                 title={movie.manifestUrl ? "Play" : "Still processing"}
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <span>{movie.status === "processing" ? "Processing…" : "Play"}</span>
+                <span>
+                  {movie.displayOnly
+                    ? "Catalog only"
+                    : movie.status === "processing"
+                      ? "Processing…"
+                      : "Play"}
+                </span>
               </button>
               <button
                 type="button"
-                className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-white backdrop-blur-xl"
+                aria-label="Add to my list"
+                className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-white backdrop-blur-xl transition-colors hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60"
               >
                 +
               </button>

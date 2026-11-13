@@ -1,0 +1,763 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  Zap,
+  AlertTriangle,
+  Users,
+  Radio,
+  Gauge,
+  Loader2,
+  Film,
+  Sparkles,
+  Music,
+  Captions,
+  Check,
+  Eye,
+  EyeOff,
+  StopCircle,
+  Search,
+  X,
+  ScanSearch,
+} from "lucide-react";
+import { fetchQoeStats, listMovies, type QoeStats } from "../../lib/api";
+import type { Movie } from "../../lib/types";
+import { clearBackendOverride, backendOverride } from "../../lib/backend";
+import { endPartyRoom, fetchPartyAdminStats, type PartyRoom } from "../../lib/party";
+
+// Health → color. Lower-is-better metrics (startup, rebuffer) and higher-is-better
+// (rebuffer-free %) each get their own thresholds.
+type Tone = "good" | "warn" | "bad" | "idle";
+const toneClass: Record<Tone, string> = {
+  good: "text-emerald-300 bg-emerald-500/15",
+  warn: "text-amber-300 bg-amber-500/15",
+  bad: "text-rose-300 bg-rose-500/15",
+  idle: "text-white/60 bg-white/10",
+};
+
+function startupTone(ms: number): Tone {
+  if (!ms) return "idle";
+  return ms < 2000 ? "good" : ms < 4000 ? "warn" : "bad";
+}
+function freeTone(pct: number): Tone {
+  return pct >= 99 ? "good" : pct >= 95 ? "warn" : "bad";
+}
+function ratioTone(r: number): Tone {
+  return r < 0.05 ? "good" : r < 0.15 ? "warn" : "bad";
+}
+
+/** Seconds → a compact human duration ("2m 40s", "1h 3m", "45s"). */
+function fmtDur(sec: number | null): string {
+  if (sec == null || !Number.isFinite(sec)) return "—";
+  const t = Math.max(0, Math.round(sec));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function fmtPartyTime(value: string | number | undefined): string {
+  if (value == null || value === "") return "—";
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+  sub,
+  tone = "idle",
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: Tone;
+}) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="flex items-center gap-2">
+        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${toneClass[tone]}`}>
+          {icon}
+        </span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
+          {label}
+        </span>
+      </div>
+      <div className="mt-3 text-2xl font-bold tabular-nums text-white">{value}</div>
+      {sub && <div className="mt-0.5 text-[11px] text-white/45">{sub}</div>}
+    </div>
+  );
+}
+
+// I/O Framer interpolation status → pill styling.
+const interpPill: Record<string, string> = {
+  queued: "text-white/60 border-white/15 bg-white/5",
+  processing: "text-sky-300 border-sky-400/30 bg-sky-400/10",
+  done: "text-emerald-300 border-emerald-400/30 bg-emerald-400/10",
+  skipped: "text-amber-300 border-amber-400/30 bg-amber-400/10",
+  failed: "text-rose-300 border-rose-400/30 bg-rose-400/10",
+};
+
+const eventColor: Record<string, string> = {
+  startup: "text-sky-300 border-sky-400/30 bg-sky-400/10",
+  rebuffer: "text-amber-300 border-amber-400/30 bg-amber-400/10",
+  bitrate_switch: "text-indigo-300 border-indigo-400/30 bg-indigo-400/10",
+  heartbeat: "text-white/50 border-white/15 bg-white/5",
+  error: "text-rose-300 border-rose-400/30 bg-rose-400/10",
+};
+
+export function AdminObservability() {
+  const [stats, setStats] = useState<QoeStats | null>(null);
+  const [movies, setMovies] = useState<Movie[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [err, setErr] = useState(false);
+  const [partyRooms, setPartyRooms] = useState<PartyRoom[]>([]);
+  const [revealedCodes, setRevealedCodes] = useState<Set<string>>(() => new Set());
+  const [endingRoom, setEndingRoom] = useState<string | null>(null);
+  const [partySearch, setPartySearch] = useState("");
+  const [inspectedRoomId, setInspectedRoomId] = useState<string | null>(null);
+  // Ticks every second so interpolation elapsed / ETA count up smoothly between
+  // the 4s catalog polls.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const load = useCallback(() => {
+    fetchQoeStats()
+      .then((s) => {
+        setStats(s);
+        setErr(false);
+      })
+      .catch(() => setErr(true))
+      .finally(() => setLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  useEffect(() => {
+    const loadParties = () => {
+      void fetchPartyAdminStats()
+        .then((result) => setPartyRooms(result.rooms))
+        .catch(() => {});
+    };
+    loadParties();
+    const timer = setInterval(loadParties, 4000);
+    return () => clearInterval(timer);
+  }, []);
+
+  async function stopParty(room: PartyRoom) {
+    const scheduled = room.state === "scheduled";
+    const action = scheduled ? "cancel this scheduled watch party" : "end this live watch party";
+    if (
+      !window.confirm(
+        `Are you sure you want to ${action}? Viewers will immediately lose stream access.`,
+      )
+    )
+      return;
+    setEndingRoom(room.room_id);
+    try {
+      await endPartyRoom(room.room_id);
+      setPartyRooms((current) =>
+        current.map((item) =>
+          item.room_id === room.room_id
+            ? {
+                ...item,
+                state: "ended",
+                ended_at: Date.now() / 1000,
+                completion_reason: scheduled ? "cancelled" : "ended_by_admin",
+              }
+            : item,
+        ),
+      );
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : "Could not end this watch party.");
+    } finally {
+      setEndingRoom(null);
+    }
+  }
+
+  // Poll the catalog for the content_id → title map AND live encode status.
+  useEffect(() => {
+    const loadMovies = () => {
+      listMovies()
+        .then(setMovies)
+        .catch(() => {});
+    };
+    loadMovies();
+    const t = setInterval(loadMovies, 4000);
+    return () => clearInterval(t);
+  }, []);
+
+  const titles = useMemo(() => new Map(movies.map((m) => [m.id, m.title] as const)), [movies]);
+  const filteredPartyRooms = useMemo(() => {
+    const query = partySearch.trim().toLocaleLowerCase();
+    if (!query) return partyRooms;
+    return partyRooms.filter(
+      (room) =>
+        room.title.toLocaleLowerCase().includes(query) ||
+        room.room_id.includes(query) ||
+        room.state.toLocaleLowerCase().includes(query),
+    );
+  }, [partyRooms, partySearch]);
+  const inspectedRoom = partyRooms.find((room) => room.room_id === inspectedRoomId) ?? null;
+  // Titles the worker is actively encoding — including re-encodes / audio
+  // re-segmenting of titles that already have a (still-playable) manifest.
+  const encoding = useMemo(() => movies.filter((m) => m.status === "processing"), [movies]);
+  // Titles with any frame-interpolation activity (I/O Framer): request + state.
+  const interpJobs = useMemo(() => movies.filter((m) => m.interpStatus), [movies]);
+
+  const titleOf = useCallback(
+    (id: string | null) => (id && titles.get(id)) || (id ? `${id.slice(0, 8)}…` : "—"),
+    [titles],
+  );
+
+  const now = stats?.generated_at ?? 0;
+  const rel = useMemo(
+    () => (ts: number) => {
+      const d = Math.max(0, Math.round(now - ts));
+      return d < 60 ? `${d}s ago` : `${Math.floor(d / 60)}m ago`;
+    },
+    [now],
+  );
+
+  if (!loaded) {
+    return (
+      <div className="flex justify-center py-16">
+        <Loader2 className="h-6 w-6 animate-spin text-white/50" />
+      </div>
+    );
+  }
+
+  if (err || !stats) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-white/5 p-8 text-center">
+        <p className="text-sm text-white/50">Beacon collector unreachable. Is the stack running?</p>
+        {backendOverride() && (
+          <button
+            type="button"
+            onClick={() => {
+              clearBackendOverride();
+              window.location.reload();
+            }}
+            className="mt-4 rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/15"
+          >
+            Use local backend
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const s = stats;
+  const mins = Math.round(s.window_seconds / 60);
+  const empty = s.sessions.total === 0;
+
+  return (
+    <section className="mt-4">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold tracking-heading">Playback health · QoE</h2>
+          <p className="mt-1 text-xs text-white/50">
+            Live client-measured Quality of Experience · rolling {mins}-minute window
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+          <Radio className="h-3 w-3 animate-pulse" /> live
+        </span>
+      </div>
+      <p className="mb-4 text-xs text-white/45">
+        Beacon collector connected · {s.recent_events.length} events received in the rolling window
+      </p>
+
+      {/* Headline cards */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard
+          icon={<Users className="h-4 w-4" />}
+          label="Active sessions"
+          value={String(s.sessions.active)}
+          sub={`${s.sessions.total} in window`}
+          tone={s.sessions.active > 0 ? "good" : "idle"}
+        />
+        <StatCard
+          icon={<Activity className="h-4 w-4" />}
+          label="Rebuffer-free"
+          value={`${s.sessions.rebuffer_free_pct}%`}
+          sub={`${s.rebuffer.sessions_affected} affected · ${s.rebuffer.events} events`}
+          tone={empty ? "idle" : freeTone(s.sessions.rebuffer_free_pct)}
+        />
+        <StatCard
+          icon={<Zap className="h-4 w-4" />}
+          label="Startup p95"
+          value={s.startup_ms.p95 ? `${(s.startup_ms.p95 / 1000).toFixed(2)}s` : "—"}
+          sub={`p50 ${s.startup_ms.p50} ms · avg ${s.startup_ms.avg} ms`}
+          tone={startupTone(s.startup_ms.p95)}
+        />
+        <StatCard
+          icon={<AlertTriangle className="h-4 w-4" />}
+          label="Errors"
+          value={String(s.errors.total)}
+          sub={`avg bitrate ${s.bitrate_kbps.avg ? `${(s.bitrate_kbps.avg / 1000).toFixed(1)} Mbps` : "—"}`}
+          tone={s.errors.total === 0 ? "good" : "bad"}
+        />
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.035]">
+        <div className="flex flex-col gap-3 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-violet-200/70">
+            <Radio className="h-3.5 w-3.5" /> Watch-party control room
+          </span>
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:max-w-md">
+            <label className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/35" />
+              <input
+                value={partySearch}
+                onChange={(event) => setPartySearch(event.target.value)}
+                placeholder="Search title, code, or state"
+                className="h-9 w-full rounded-lg border border-white/10 bg-black/20 pl-9 pr-8 text-xs text-white outline-none placeholder:text-white/30 focus:border-violet-400/50"
+              />
+              {partySearch && (
+                <button
+                  type="button"
+                  aria-label="Clear party search"
+                  onClick={() => setPartySearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-white/35 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </label>
+            <span className="shrink-0 text-[11px] text-white/40">
+              {partyRooms.filter((room) => room.state === "live").length} live · {partyRooms.length}{" "}
+              total
+            </span>
+          </div>
+        </div>
+        {!partyRooms.length ? (
+          <p className="px-4 py-6 text-center text-sm text-white/40">
+            No watch parties created yet.
+          </p>
+        ) : !filteredPartyRooms.length ? (
+          <p className="px-4 py-6 text-center text-sm text-white/40">
+            No watch parties match that search.
+          </p>
+        ) : (
+          <div className="max-h-[34rem] overflow-auto overscroll-contain">
+            <table className="w-full min-w-[1040px] text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-[#11101c] text-[9px] uppercase tracking-wider text-white/35 shadow-[0_1px_0_rgba(255,255,255,.08)]">
+                <tr>
+                  <th className="px-4 py-2.5">Presentation</th>
+                  <th className="px-4 py-2.5">State</th>
+                  <th className="px-4 py-2.5">Audience</th>
+                  <th className="px-4 py-2.5">Viewer diagnostics</th>
+                  <th className="px-4 py-2.5">Broadcast position</th>
+                  <th className="px-4 py-2.5">Timeline</th>
+                  <th className="px-4 py-2.5">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[.06]">
+                {filteredPartyRooms.map((room) => {
+                  const revealed = revealedCodes.has(room.room_id);
+                  const finishedLabel =
+                    room.completion_reason === "cancelled"
+                      ? "Cancelled"
+                      : room.completion_reason === "ended_by_admin"
+                        ? "Ended by admin"
+                        : "Completed";
+                  return (
+                    <tr key={room.room_id} className="align-top">
+                      <td className="px-4 py-3">
+                        <b className="block max-w-[240px] truncate text-white">{room.title}</b>
+                        <button
+                          type="button"
+                          className="mt-1 inline-flex items-center gap-1 font-mono text-[9px] text-white/40 hover:text-violet-200"
+                          onClick={() =>
+                            setRevealedCodes((current) => {
+                              const next = new Set(current);
+                              if (next.has(room.room_id)) next.delete(room.room_id);
+                              else next.add(room.room_id);
+                              return next;
+                            })
+                          }
+                        >
+                          {revealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                          code {revealed ? room.room_id : `••••••${room.room_id.slice(-4)}`}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${room.state === "live" ? "bg-emerald-500/15 text-emerald-300" : room.state === "ended" ? "bg-sky-500/10 text-sky-200/70" : "bg-violet-500/15 text-violet-300"}`}
+                        >
+                          {room.state === "ended" ? finishedLabel : room.state}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 tabular-nums text-white/70">
+                        {room.participants ?? 0} joined · {room.ready_participants ?? 0} ready
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="grid max-w-[230px] gap-1">
+                          {(room.participant_details ?? []).slice(0, 2).map((viewer) => (
+                            <span
+                              key={viewer.viewer_id}
+                              className="block truncate whitespace-nowrap text-[9px] text-white/45"
+                              title={`${viewer.name} · ${viewer.country} · #${viewer.ip_hash} · ${viewer.drift_ms}ms · ${viewer.bitrate_kbps || 0}kbps`}
+                            >
+                              <b className="text-white/70">{viewer.name}</b> · {viewer.country} · {viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps
+                            </span>
+                          ))}
+                          {(room.participant_details?.length ?? 0) > 2 && (
+                            <span className="text-[9px] text-violet-200/60">+{room.participant_details!.length - 2} more — inspect stream</span>
+                          )}
+                          {!room.participant_details?.length && (
+                            <span className="text-[9px] text-white/30">No connected viewers</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 font-mono tabular-nums text-white/70">
+                        {fmtDur(room.position_seconds ?? 0)}
+                      </td>
+                      <td className="px-4 py-3 text-[10px] leading-5 text-white/50">
+                        <span className="block">
+                          <b className="text-white/30">
+                            {room.completion_reason === "cancelled" ? "Scheduled" : "Started"}
+                          </b>{" "}
+                          · {fmtPartyTime(room.starts_at)}
+                        </span>
+                        <span className="block">
+                          <b className="text-white/30">Ended</b> ·{" "}
+                          {room.state === "ended" ? fmtPartyTime(room.ended_at) : "—"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => setInspectedRoomId(room.room_id)}
+                          className="mb-2 inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-400/25 bg-violet-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-violet-200 transition hover:bg-violet-500/20"
+                        >
+                          <ScanSearch className="h-3.5 w-3.5" /> Inspect
+                        </button>
+                        {room.state !== "ended" && (
+                          <button
+                            type="button"
+                            disabled={endingRoom === room.room_id}
+                            onClick={() => void stopParty(room)}
+                            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-rose-400/25 bg-rose-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-wait disabled:opacity-50"
+                          >
+                            {endingRoom === room.room_id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <StopCircle className="h-3.5 w-3.5" />
+                            )}
+                            {room.state === "scheduled" ? "Cancel" : "End stream"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {inspectedRoom && (() => {
+          const viewers = inspectedRoom.participant_details ?? [];
+          const average = (key: "drift_ms" | "bitrate_kbps") => viewers.length ? Math.round(viewers.reduce((sum, viewer) => sum + (viewer[key] || 0), 0) / viewers.length) : 0;
+          return <div className="border-t border-violet-400/15 bg-black/20 p-4">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0"><span className="text-[9px] font-bold uppercase tracking-[.18em] text-violet-300/60">Stream observability</span><h3 className="mt-1 truncate text-sm font-semibold text-white">{inspectedRoom.title}</h3><p className="font-mono text-[10px] text-white/35">Room ••••••{inspectedRoom.room_id.slice(-4)}</p></div>
+              <button type="button" aria-label="Close stream observability" onClick={() => setInspectedRoomId(null)} className="rounded-lg border border-white/10 p-2 text-white/40 hover:bg-white/5 hover:text-white"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Connected</span><b className="mt-1 block text-lg tabular-nums text-white">{viewers.length}</b></div>
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Ready</span><b className="mt-1 block text-lg tabular-nums text-white">{inspectedRoom.ready_participants ?? 0}</b></div>
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Average drift</span><b className="mt-1 block text-lg tabular-nums text-white">{average("drift_ms")} ms</b></div>
+              <div className="rounded-lg border border-white/10 bg-white/[.03] p-3"><span className="text-[9px] uppercase text-white/35">Reported bitrate</span><b className="mt-1 block text-lg tabular-nums text-white">{average("bitrate_kbps")} kbps</b></div>
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-white/10 p-3"><span className="text-[9px] font-bold uppercase tracking-wider text-white/35">Viewer connections</span><div className="mt-2 max-h-40 space-y-1.5 overflow-y-auto">{viewers.map((viewer) => <div key={viewer.viewer_id} className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-white/[.03] px-2.5 py-2 text-[10px]"><span className="min-w-0 truncate text-white/60"><b className="text-white/85">{viewer.name}</b> · {viewer.country} · #{viewer.ip_hash}</span><span className="shrink-0 tabular-nums text-white/40">{viewer.drift_ms}ms · {viewer.bitrate_kbps || 0}kbps</span></div>)}{!viewers.length && <p className="text-xs text-white/30">No viewers currently connected.</p>}</div></div>
+              <div className="rounded-lg border border-white/10 p-3"><span className="text-[9px] font-bold uppercase tracking-wider text-white/35">Recent room events</span><div className="mt-2 max-h-40 space-y-1.5 overflow-y-auto">{(inspectedRoom.recent_events ?? []).slice(-12).reverse().map((event, index) => <div key={`${event.timestamp}-${index}`} className="flex items-center justify-between gap-3 rounded-md bg-white/[.03] px-2.5 py-2 text-[10px]"><span className="truncate capitalize text-white/60">{event.type.replaceAll("_", " ")}{event.name ? ` · ${event.name}` : ""}</span><span className="shrink-0 text-white/30">{fmtPartyTime(event.timestamp)}</span></div>)}{!inspectedRoom.recent_events?.length && <p className="text-xs text-white/30">No recent room events.</p>}</div></div>
+            </div>
+          </div>;
+        })()}
+      </div>
+
+      {/* Transcode jobs — live encode progress from the catalog (upload-api) */}
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+        <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+            <Film className="h-3.5 w-3.5" /> Transcode jobs
+          </span>
+          <span className="tabular-nums text-[11px] text-white/40">{encoding.length} active</span>
+        </div>
+        {encoding.length === 0 ? (
+          <p className="px-4 py-5 text-center text-sm text-white/40">
+            No active encodes — everything&apos;s ready.
+          </p>
+        ) : (
+          <ul className="divide-y divide-white/[0.06]">
+            {encoding.map((m) => {
+              const pct = Math.max(0, Math.min(100, m.progress ?? 0));
+              return (
+                <li key={m.id} className="px-4 py-3">
+                  <div className="mb-1.5 flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-white">{m.title}</span>
+                    <span className="flex items-center gap-2 whitespace-nowrap text-[11px] text-white/50">
+                      <span className="capitalize">{m.stage ?? "queued"}</span>
+                      <span className="tabular-nums">{pct}%</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-400 transition-[width] duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  {/* Live audio/subtitle extraction checklist — the 'todo list' of
+                      tracks the worker is pulling out of the source (VLC-style). */}
+                  {m.extractTasks && m.extractTasks.length > 0 && (
+                    <ul className="mt-2 flex flex-wrap gap-1.5">
+                      {m.extractTasks.map((t, i) => {
+                        const done = t.state === "done";
+                        const image = t.state === "image";
+                        return (
+                          <li
+                            key={`${t.kind}-${i}`}
+                            className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] ${
+                              done
+                                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                                : image
+                                  ? "border-white/10 bg-white/[0.03] text-white/35"
+                                  : "border-white/15 bg-white/5 text-white/55"
+                            }`}
+                            title={
+                              image
+                                ? "Image-based subtitle — not viewable in a browser"
+                                : `${t.kind}${t.lang ? ` · ${t.lang}` : ""}`
+                            }
+                          >
+                            {t.kind === "audio" ? (
+                              <Music className="h-3 w-3 shrink-0" />
+                            ) : (
+                              <Captions className="h-3 w-3 shrink-0" />
+                            )}
+                            <span className="max-w-[120px] truncate">{t.label}</span>
+                            {done ? (
+                              <Check className="h-3 w-3 shrink-0" />
+                            ) : image ? (
+                              <span className="uppercase tracking-wide">img</span>
+                            ) : (
+                              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Frame interpolation — I/O Framer status + reason per title */}
+      {interpJobs.length > 0 && (
+        <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+          <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+            <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+              <Sparkles className="h-3.5 w-3.5" /> Frame interpolation · I/O Framer
+            </span>
+            <span className="tabular-nums text-[11px] text-white/40">
+              {interpJobs.filter((m) => m.interpStatus === "processing").length} active
+            </span>
+          </div>
+          <ul className="divide-y divide-white/[0.06]">
+            {interpJobs.map((m) => {
+              const active = m.interpStatus === "processing";
+              // During the interpolation pass, prefer the I/O Framer's own 0-100 +
+              // stage (granular, and where the time actually goes on CPU); during
+              // the ladder encode fall back to the worker's overall progress.
+              const interpolating = active && m.stage === "interpolating";
+              const pct = Math.max(
+                0,
+                Math.min(100, (interpolating ? m.interpProgress : m.progress) ?? 0),
+              );
+              const stageLabel = interpolating
+                ? (m.interpStage ?? "interpolating")
+                : (m.stage ?? "working");
+              const elapsed =
+                active && m.interpStartedAt ? Math.max(0, nowMs / 1000 - m.interpStartedAt) : null;
+              // ETA only while interpolating (elapsed maps cleanly onto its 0-100);
+              // once encoding it's near the end, so we just show the stage/%.
+              const eta =
+                interpolating && pct > 3 && elapsed != null ? (elapsed * (100 - pct)) / pct : null;
+              return (
+                <li key={m.id} className="px-4 py-2.5 text-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="min-w-0 flex-1 truncate text-white">{m.title}</span>
+                    {m.interpTargetFps ? (
+                      <span className="whitespace-nowrap text-[11px] tabular-nums text-white/45">
+                        → {m.interpTargetFps} fps
+                      </span>
+                    ) : null}
+                    {active ? (
+                      <span className="flex items-center gap-2 whitespace-nowrap text-[11px] text-white/55">
+                        <span className="capitalize">{stageLabel}</span>
+                        <span className="tabular-nums text-white/75">{pct}%</span>
+                        {elapsed != null && (
+                          <span className="text-white/35">· {fmtDur(elapsed)}</span>
+                        )}
+                        {eta != null && (
+                          <span className="text-sky-300/80">· ~{fmtDur(eta)} left</span>
+                        )}
+                      </span>
+                    ) : m.interpDetail ? (
+                      <span
+                        className="hidden max-w-[260px] truncate text-[11px] text-white/40 sm:inline"
+                        title={m.interpDetail}
+                      >
+                        {m.interpDetail}
+                      </span>
+                    ) : null}
+                    <span
+                      className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold capitalize ${
+                        interpPill[m.interpStatus ?? "queued"] ?? interpPill.queued
+                      }`}
+                    >
+                      {active && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {m.interpStatus}
+                    </span>
+                  </div>
+                  {active && (
+                    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-sky-400 to-indigo-400 transition-[width] duration-500"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {empty && (
+        <p className="mt-4 rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-white/50">
+          No playback in the last {mins} minutes. Play a title (even in another tab) and the metrics
+          stream in live.
+        </p>
+      )}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+        {/* Per-title breakdown */}
+        <div className="overflow-hidden rounded-xl border border-white/10">
+          <div className="border-b border-white/10 bg-white/[0.03] px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+            Per-title QoE
+          </div>
+          {s.top_content.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-white/40">No sessions yet.</p>
+          ) : (
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="text-left text-[10.5px] uppercase tracking-wider text-white/35">
+                  <th className="px-4 py-2 font-semibold">Title</th>
+                  <th className="px-4 py-2 text-right font-semibold">Sessions</th>
+                  <th className="px-4 py-2 text-right font-semibold">Startup p95</th>
+                  <th className="px-4 py-2 text-right font-semibold">Rebuffer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.top_content.map((c) => (
+                  <tr key={c.content_id} className="border-t border-white/[0.06]">
+                    <td className="max-w-[220px] truncate px-4 py-2 text-white">
+                      {titleOf(c.content_id)}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-white/70">
+                      {c.sessions}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${toneClass[startupTone(c.startup_p95_ms)]}`}
+                      >
+                        {c.startup_p95_ms ? `${c.startup_p95_ms} ms` : "—"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${toneClass[ratioTone(c.rebuffer_ratio)]}`}
+                      >
+                        {(c.rebuffer_ratio * 100).toFixed(0)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Errors + live feed */}
+        <div className="flex flex-col gap-4">
+          <div className="rounded-xl border border-white/10 p-4">
+            <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+              <Gauge className="h-3.5 w-3.5" /> Errors by type
+            </div>
+            {Object.keys(s.errors.by_type).length === 0 ? (
+              <p className="text-sm text-emerald-300/80">None 🎉</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {Object.entries(s.errors.by_type).map(([type, n]) => (
+                  <li key={type} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="truncate font-mono text-rose-300">{type}</span>
+                    <span className="tabular-nums text-white/60">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="min-h-[180px] rounded-xl border border-white/10 p-4">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+              Live event feed
+            </div>
+            {s.recent_events.length === 0 ? (
+              <p className="text-sm text-white/40">Waiting for events…</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {s.recent_events.slice(0, 12).map((e, i) => (
+                  <li
+                    key={`${e.session_id}-${e.ts}-${i}`}
+                    className="flex items-center gap-2 text-[11px]"
+                  >
+                    <span
+                      className={`rounded border px-1.5 py-0.5 font-semibold ${eventColor[e.event] ?? eventColor.heartbeat}`}
+                    >
+                      {e.event}
+                    </span>
+                    <span className="truncate text-white/60">{titleOf(e.content_id)}</span>
+                    {e.detail && <span className="tabular-nums text-white/40">{e.detail}</span>}
+                    <span className="ml-auto whitespace-nowrap text-white/30">{rel(e.ts)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

@@ -22,6 +22,21 @@ SEGMENTS_UPLOADED = Counter(
     "Total number of HLS segments uploaded",
 )
 
+# Frame interpolation (I/O Framer) outcomes as seen by the worker: done (a
+# higher-fps ladder published), skipped (a guardrail declined it) or failed (the
+# sidecar errored / was unreachable → native-fps fallback).
+INTERP_JOBS_TOTAL = Counter(
+    "interp_jobs_total",
+    "Frame-interpolation outcomes",
+    ["result"],
+)
+
+INTERP_DURATION = Histogram(
+    "interp_duration_seconds",
+    "Wall-clock of a completed interpolation pass (worker-observed)",
+    buckets=(15, 30, 60, 120, 300, 600, 1200, 1800),
+)
+
 
 def start_metrics_server(port: int = 9100) -> None:
     """Start Prometheus metrics HTTP server."""
