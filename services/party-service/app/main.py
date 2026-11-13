@@ -128,19 +128,19 @@ def room_has_ended(item: dict[str, Any]) -> bool:
         return False
 
 
-async def mark_room_ended(room_id: str) -> None:
+async def mark_room_ended(room_id: str, reason: str = "completed") -> None:
     item = room_item(room_id)
     if not item or item.get("state") == "ended":
         return
     ended_at = int(time.time())
     table().update_item(
         Key={"room_id": room_id},
-        UpdateExpression="SET #s = :s, ended_at = :e, playing = :p, position_seconds = :d",
+        UpdateExpression="SET #s = :s, ended_at = :e, playing = :p, position_seconds = :d, completion_reason = :r",
         ExpressionAttributeNames={"#s": "state"},
-        ExpressionAttributeValues={":s": "ended", ":e": ended_at, ":p": False, ":d": item.get("duration_seconds", 0)},
+        ExpressionAttributeValues={":s": "ended", ":e": ended_at, ":p": False, ":d": item.get("duration_seconds", 0), ":r": reason},
     )
-    record_event(room_id, "ended")
-    await broadcast(room_id, {"type": "ended", "ended_at": ended_at})
+    record_event(room_id, "ended", reason=reason)
+    await broadcast(room_id, {"type": "ended", "ended_at": ended_at, "reason": reason})
 
 
 async def wait_for_room_end(room_id: str, ends_at: float) -> None:
@@ -163,7 +163,7 @@ def schedule_room_end(item: dict[str, Any]) -> None:
 
 
 def public_room(item: dict[str, Any]) -> dict[str, Any]:
-    room = {key: item[key] for key in ("room_id", "movie_id", "title", "state", "starts_at", "ends_at", "duration_seconds", "position_seconds", "playing", "version", "created_at", "ended_at") if key in item}
+    room = {key: item[key] for key in ("room_id", "movie_id", "title", "state", "starts_at", "ends_at", "duration_seconds", "position_seconds", "playing", "version", "created_at", "ended_at", "completion_reason") if key in item}
     if room_has_ended(item):
         room.update(state="ended", playing=False, position_seconds=item.get("duration_seconds", item.get("position_seconds", 0)), server_time=time.time())
         room["participants"] = len(connections.get(str(item.get("room_id")), set()))
@@ -296,12 +296,18 @@ def list_rooms(authorization: str | None = Header(default=None)) -> dict[str, An
 @app.post("/v1/admin/rooms/{room_id}/end")
 async def end_room(room_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_admin(authorization)
-    if not room_item(room_id):
+    item = room_item(room_id)
+    if not item:
         raise HTTPException(status_code=404, detail="Room not found")
     task = room_end_tasks.pop(room_id, None)
     if task:
         task.cancel()
-    await mark_room_ended(room_id)
+    try:
+        starts_at = datetime.fromisoformat(str(item.get("starts_at", "")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        starts_at = 0
+    reason = "cancelled" if time.time() < starts_at else "ended_by_admin"
+    await mark_room_ended(room_id, reason)
     return {"status": "ended"}
 
 
