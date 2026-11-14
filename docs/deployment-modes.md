@@ -207,6 +207,44 @@ RELAY_BIND_ADDRESS=127.0.0.1 \
   --profile relay up -d gateway
 ```
 
+### Oracle ARM64 relay storage
+
+Fresh Oracle Ampere deployments must add `docker-compose.oracle.yml`. MinIO's
+historical Docker Hub server and client images were withdrawn in September 2026,
+so the Oracle override uses the maintained, multi-architecture RustFS image and
+a small repository-owned boto3 bucket bootstrap. The internal S3 hostname stays
+`minio:9000`, so application services require no endpoint change.
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.relay.yml \
+  -f docker-compose.oracle.yml \
+  --profile relay \
+  up -d --build \
+  minio dynamodb-local origin upload-api beacon-collector \
+  party-service relay-ingress gateway
+```
+
+The override stores relay objects in the separate `oracle_object_data` volume.
+It intentionally does not attach RustFS to an existing `minio_data` volume,
+because the two servers do not share an on-disk format. Existing local MinIO
+volumes and locally stored titles therefore remain untouched.
+
+Both `ghcr.io/rustfs/rustfs:1.0.5` and `amazon/dynamodb-local:latest` publish
+native `linux/arm64` manifests; emulation is not required on Ampere. Verify the
+fresh deployment with:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.relay.yml \
+  -f docker-compose.oracle.yml \
+  --profile relay ps
+curl -fsS http://127.0.0.1:8010/health
+curl -fsS http://127.0.0.1:8088/healthz
+```
+
 For a protected reverse proxy or firewall on Laptop B, keep the gateway bound
 to loopback. If a deliberately managed LAN interface is required, set
 `RELAY_BIND_ADDRESS` to that interface address and enforce an allowlist at the
