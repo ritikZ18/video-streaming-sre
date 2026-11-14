@@ -1,0 +1,42 @@
+# Fresh Oracle ARM64 relay storage override.
+#
+# MinIO's historical Docker Hub images were withdrawn in September 2026. This
+# override keeps existing local MinIO volumes untouched while new Oracle relay
+# hosts use maintained, multi-architecture RustFS with the same internal S3
+# endpoint (`http://minio:9000`).
+services:
+  storage-permissions:
+    image: alpine:3.22
+    container_name: streamsre-storage-permissions
+    user: root
+    command: ["sh", "-c", "chown -R 10001:10001 /data"]
+    volumes:
+      - oracle_object_data:/data
+    restart: "no"
+
+  minio:
+    image: ghcr.io/rustfs/rustfs:1.0.5
+    command: []
+    depends_on:
+      storage-permissions:
+        condition: service_completed_successfully
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      RUSTFS_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - oracle_object_data:/data
+
+  storage-bootstrap:
+    image: streamsre-storage-bootstrap
+    build:
+      context: ./services/storage-bootstrap
+      dockerfile: Dockerfile
+    entrypoint: ["python", "/app/bootstrap.py"]
+    command: []
+
+volumes:
+  oracle_object_data:
