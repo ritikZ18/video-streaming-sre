@@ -1,0 +1,1 @@
+"""Artifact-only ingress for the Laptop B relay."""

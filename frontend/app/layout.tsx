@@ -14,10 +14,11 @@ type RootLayoutProps = {
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-black font-sans text-white antialiased">
+      {/* Base color + ambient top wash live in index.css so class ordering can't
+          flatten them back to black. */}
+      <body className="min-h-screen font-sans text-white antialiased">
         {children}
       </body>
     </html>
   );
 }
-

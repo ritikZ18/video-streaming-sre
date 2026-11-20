@@ -57,3 +57,47 @@ def object_exists(bucket: str, key: str) -> bool:
         raise
 
 
+def delete_prefix(bucket: str, prefix: str) -> int:
+    """Delete every object under ``prefix`` (e.g. all of one job's segments or its
+    raw source). Best-effort: returns the count removed and never raises, since the
+    catalog row is the source of truth for what's visible."""
+    client = _client()
+    deleted = 0
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objs:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": objs})
+                deleted += len(objs)
+    except (BotoCoreError, ClientError):
+        pass
+    return deleted
+
+
+def upload_bytes(bucket: str, key: str, data: bytes, content_type: str) -> None:
+    """Store raw bytes with an explicit Content-Type (used for custom artwork so
+    the browser renders the poster/backdrop correctly)."""
+    client = _client()
+    try:
+        _ensure_bucket(client, bucket)
+        client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+    except (BotoCoreError, ClientError) as exc:  # pragma: no cover - network error
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to store artwork in object storage",
+        ) from exc
+
+
+def first_key(bucket: str, prefix: str) -> str | None:
+    """Return the first object key under a prefix (used to find a title's original
+    source before re-transcoding), or None if nothing is there."""
+    client = _client()
+    try:
+        resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+        items = resp.get("Contents", [])
+        return items[0]["Key"] if items else None
+    except (BotoCoreError, ClientError):
+        return None
+
+

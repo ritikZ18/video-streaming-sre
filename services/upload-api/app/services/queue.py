@@ -1,62 +1,106 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import boto3
 from app.config import get_settings
-from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException, status
 
 
-def _client() -> BaseClient:
+def _resource():
     settings = get_settings()
-    session = boto3.session.Session(region_name=settings.aws_region)
-    return session.client("sqs", endpoint_url=settings.sqs_endpoint_url)
+    return boto3.resource(
+        "dynamodb",
+        region_name=settings.aws_region,
+        endpoint_url=settings.dynamodb_endpoint_url,
+    )
 
 
-def enqueue_transcode_job(job_id: str, s3_key: str, filename: str) -> None:
-    """Send a transcode job message to SQS."""
+def _table():
+    return _resource().Table(get_settings().queue_table)
+
+
+def _ensure_table() -> None:
+    """Create the queue table on demand (parity with the catalog's lazy create)."""
     settings = get_settings()
-    if not settings.sqs_transcode_queue_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Transcode queue URL is not configured",
-        )
+    resource = _resource()
+    client = resource.meta.client
+    try:
+        client.describe_table(TableName=settings.queue_table)
+        return
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+    resource.create_table(
+        TableName=settings.queue_table,
+        KeySchema=[{"AttributeName": "job_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "job_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    client.get_waiter("table_exists").wait(TableName=settings.queue_table)
 
-    payload: dict[str, Any] = {
+
+def enqueue_transcode_job(
+    job_id: str,
+    s3_key: str,
+    filename: str,
+    mode: str = "transcode",
+    interp: bool = False,
+    interp_target_fps: int | None = None,
+    interp_height: int | None = None,
+    interp_variant: bool = False,
+) -> None:
+    """Add a transcode job to the durable, DynamoDB-backed queue.
+
+    The queue item is keyed by ``job_id`` so a re-enqueue (e.g. admin
+    re-transcode) simply overwrites the entry and makes it immediately
+    claimable — never a duplicate. ``visible_at`` is the lease clock the worker
+    uses for at-least-once delivery; a fresh job is visible right away.
+
+    ``mode`` selects the worker path: ``"transcode"`` (full encode) or
+    ``"remux_audio"`` (re-package existing renditions with an attached audio
+    track — no video re-encode).
+
+    ``interp`` asks the worker to run frame interpolation (I/O Framer) to
+    ``interp_target_fps`` before the ladder. In Phase 1 the worker only logs this;
+    it is wired to the sidecar in a later phase.
+    """
+    body: dict[str, Any] = {
         "job_id": job_id,
         "s3_key": s3_key,
         "filename": filename,
+        "mode": mode,
         "profiles": ["360p", "720p", "1080p"],
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }
-
-    body = json.dumps(payload)
-    client = _client()
-
+    if interp:
+        body["interp"] = True
+        body["interp_target_fps"] = interp_target_fps
+        if interp_height:
+            body["interp_height"] = interp_height
+        # A "variant" job publishes a separate, non-destructive smoothed ladder
+        # under {id}/interp/ and links it onto the title (Smooth toggle in the
+        # player) instead of replacing the original manifest.
+        if interp_variant:
+            body["interp_variant"] = True
+    now = int(time.time())
+    item = {
+        "job_id": job_id,
+        "body": json.dumps(body),
+        "visible_at": now,
+        "receive_count": 0,
+        "enqueued_at": now,
+    }
     try:
-        client.send_message(
-            QueueUrl=settings.sqs_transcode_queue_url,
-            MessageBody=body,
-        )
-    except ClientError as exc:  # pragma: no cover - network error
-        error_code = exc.response.get("Error", {}).get("Code")
-        if error_code in {"AWS.SimpleQueueService.NonExistentQueue"}:
-            # Lazily create queue in local dev and retry once. A long
-            # VisibilityTimeout keeps an in-flight transcode (minutes long) from
-            # being redelivered to another worker while it is still processing.
-            queue_name = settings.sqs_transcode_queue_url.rstrip("/").split("/")[-1]
-            client.create_queue(
-                QueueName=queue_name,
-                Attributes={"VisibilityTimeout": "1800"},
-            )
-            client.send_message(
-                QueueUrl=settings.sqs_transcode_queue_url,
-                MessageBody=body,
-            )
+        _table().put_item(Item=item)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+            _ensure_table()
+            _table().put_item(Item=item)
             return
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -67,5 +111,3 @@ def enqueue_transcode_job(job_id: str, s3_key: str, filename: str) -> None:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to enqueue transcode job",
         ) from exc
-
-

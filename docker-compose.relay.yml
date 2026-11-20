@@ -1,0 +1,12 @@
+# Laptop B relay networking override.
+#
+# This file adds no application or datastore service. It exposes the existing
+# gateway boundary on the configured interface while the relay profile keeps
+# Cloudflared disabled unless explicitly requested with the tunnel profile.
+services:
+  gateway:
+    ports:
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:8088:8088"
+  relay-ingress:
+    ports:
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:8010:8010"
